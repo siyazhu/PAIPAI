@@ -1,4 +1,4 @@
-# Package of Alloy Interstitials Processed with Artificial Intelligence (PAIPAI)
+# Package for Alloy Interstitials Processed with Artificial Intelligence (PAIPAI)
 
 
 <p>
