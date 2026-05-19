@@ -85,12 +85,33 @@ PAIPAI/
 
 # Installation
 
+## Dependencies
+
+PAIPAI relies on the external MLIP infrastructure provided by MaterialsFramework:
+
+https://github.com/dogusariturk/MaterialsFramework
+
+Please install MaterialsFramework and ensure the corresponding Python environment is properly configured before using PAIPAI.
+
+Typical dependencies include:
+- pymatgen
+- TensorFlow
+- MLIP models
+- materialsframework package
+
+Users should verify that the following command works correctly before running PAIPAI:
+
+```bash
+python -c "import materialsframework"
+```
+---
+
 ## Prerequisites
 
 - CMake ≥ 3.10
 - C++17 compatible compiler (e.g. GCC, Clang)
 - Python 3
-- Required Python MLIP environment (`materialsframework`, `pymatgen`, TensorFlow, etc.)
+- MaterialsFramework
 
 ---
 
