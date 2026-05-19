@@ -363,7 +363,10 @@ including:
 - CPU search examples
 - GPU finite-temperature examples
 - SLURM submission scripts
-- Sample struc.in file
+- Sample struc.in file:
+    - struc\_TiVCrRe\_Slab.in: input structure for Ti19V77Cr26Re6 slab structure;
+    - struc\_NbTaTiHf\_Bulk\_B.in: input structure for Nb113Ti63Ta37Hf37 bulk structure, with 8 Boron interstitials;
+    - struc\_NbTaTiHf\_GB\_BO.in: input structure for Nb90Ti50Ta30Hf30 sigma-5(120) grain boundary structure, with 4 Boron and 4 Oxygen interstitials. 
 ---
 
 # Citation
