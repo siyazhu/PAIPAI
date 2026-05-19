@@ -27,13 +27,17 @@ struct Args {
     int p_swap_inter  = 30;
     int p_exch_metal  = 0;
     int p_exch_inter  = 0;
+    double intsite_neighbor_cutoff = 3.5;  // cutoff for interstitial-site metal-neighbor map (Angstrom)
+    std::string mode = "search";          // "search" = fast+slow pool; "finiteT" = one direct slow task at a time
 };
 
 void print_help(const char* prog){
     std::cout << "Usage: " << prog << " INPUT_STRUCTURE "
               << "[--workers N] [--steps K] [--temp T] "
               << "[--p-swap-metal P] [--p-swap-inter P] "
-              << "[--p-exch-metal P] [--p-exch-inter P]\n";
+              << "[--p-exch-metal P] [--p-exch-inter P] "
+              << "[--intsite-neighbor-cutoff R] "
+              << "[--mode search|finiteT] [--finiteT]\n";
 }
 
 Args parse_args(int argc, char** argv){
@@ -49,11 +53,19 @@ Args parse_args(int argc, char** argv){
         else if (s=="--p-swap-inter"){ need("--p-swap-inter"); a.p_swap_inter=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-exch-metal"){ need("--p-exch-metal"); a.p_exch_metal=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-exch-inter"){ need("--p-exch-inter"); a.p_exch_inter=std::max(0, std::stoi(argv[++i])); }
+        else if (s=="--intsite-neighbor-cutoff"){ need("--intsite-neighbor-cutoff"); a.intsite_neighbor_cutoff=std::stod(argv[++i]); }
+        else if (s=="--mode"){ need("--mode"); a.mode=argv[++i]; }
+        else if (s=="--finiteT"){ a.mode="finiteT"; }
         else { std::cerr<<"Unknown arg: "<<s<<"\n"; print_help(argv[0]); std::exit(2); }
     }
     int sum = a.p_swap_metal + a.p_swap_inter + a.p_exch_metal + a.p_exch_inter;
     if (sum <= 0){
         std::cerr << "MC move probabilities are incorrect. Please check input parameters.\n";
+        std::exit(2);
+    }
+    if (a.mode != "search" && a.mode != "finiteT") {
+        std::cerr << "Unknown --mode: " << a.mode
+                  << " (valid: search, finiteT)\n";
         std::exit(2);
     }
     return a;
@@ -75,6 +87,58 @@ void copy_file_overwrite(const fs::path& src, const fs::path& dst) {
     fs::create_directories(dst.parent_path());
     std::error_code ec;
     fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+}
+
+
+bool is_ignorable_runtime_name(const std::string& name) {
+    if (name.empty()) return true;
+    if (name == "." || name == "..") return true;
+    if (name.rfind(".tmp_", 0) == 0) return true;
+    if (name.size() >= 5 && name.substr(name.size() - 5) == ".lock") return true;
+    return false;
+}
+
+bool dir_has_non_tmp_entries(const fs::path& p) {
+    if (!fs::exists(p)) return false;
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(p, ec)) {
+        if (ec) break;
+        std::string name = e.path().filename().string();
+        if (is_ignorable_runtime_name(name)) continue;
+        return true;
+    }
+    return false;
+}
+
+// In finiteT mode we want a strict one-proposal-at-a-time chain.  A task is
+// pending if it is in the slow queue, claimed by a worker, finished but not yet
+// consumed, or has a report waiting for the master.
+bool has_pending_slow_task(const fs::path& root) {
+    if (dir_has_non_tmp_entries(root / "waiting_pool")) return true;
+    if (dir_has_non_tmp_entries(root / "waiting_work")) return true;
+    if (dir_has_non_tmp_entries(root / "refine_outbox")) return true;
+    if (dir_has_non_tmp_entries(root / "reports")) return true;
+    return false;
+}
+
+// Remove files/directories associated with a processed slow-worker task.
+// After the master consumes reports/<task_id>.json, the corresponding
+// refine_outbox/<task_id> directory is no longer needed. Accepted states are
+// copied to SAVE/CONTCAR and archived to mcprocess before this cleanup.
+void cleanup_processed_task(const fs::path& root,
+                            const std::string& task_id,
+                            const fs::path& rep_path,
+                            bool remove_outbox = true)
+{
+    std::error_code ec;
+    fs::remove(rep_path, ec);
+
+    if (remove_outbox && !task_id.empty()) {
+        fs::path out_dir = root / "refine_outbox" / task_id;
+        if (fs::exists(out_dir)) {
+            fs::remove_all(out_dir, ec);
+        }
+    }
 }
 
 // Atomic-ish integer counter for mc_count (very simple).
@@ -126,36 +190,75 @@ void archive_mc_accept(const fs::path& root,
               << ", archived to " << mc_dir << "\n";
 }
 
+
+// Update a candidate SAVE using the relaxed CONTCAR before making it current.
+// The candidate SAVE stores the trial occupations in fixed PAIPAI site order.
+// updateCoordinatesFromContcar() then:
+//   - maps CONTCAR metal coordinates back by occupation/type order;
+//   - maps occupied interstitial coordinates back by occupation/type order;
+//   - updates empty interstitial sites by nearby-metal displacement.
+bool update_relaxed_save_in_outbox(const fs::path& root,
+                                   const fs::path& out_dir)
+{
+    fs::path save_path = out_dir / "SAVE";
+    fs::path contcar_path = out_dir / "CONTCAR";
+    fs::path neigh_path = root / "intsite_metal_neighbors.dat";
+
+    if (!fs::exists(save_path)) {
+        std::cerr << "[WARN] missing candidate SAVE: " << save_path << "\n";
+        return false;
+    }
+    if (!fs::exists(contcar_path)) {
+        std::cerr << "[WARN] missing candidate CONTCAR: " << contcar_path << "\n";
+        return false;
+    }
+    if (!fs::exists(neigh_path)) {
+        std::cerr << "[WARN] missing intsite neighbor map: " << neigh_path << "\n";
+        return false;
+    }
+
+    Structure accepted;
+    if (!accepted.readstruc(save_path.string().c_str())) {
+        std::cerr << "[WARN] failed to read candidate SAVE: " << save_path << "\n";
+        return false;
+    }
+
+    if (!accepted.updateCoordinatesFromContcar(contcar_path.string().c_str(),
+                                               neigh_path.string().c_str())) {
+        std::cerr << "[WARN] failed to update SAVE from CONTCAR for "
+                  << out_dir << "\n";
+        return false;
+    }
+
+    accepted.outputsave(save_path.string().c_str());
+    return true;
+}
+
 // Metropolis acceptance
 bool Accept(double Eold, double Enew, double temp,
             std::mt19937_64& rng)
 {
     if (Enew <= Eold) return true;
-    double p = std::exp(-(Enew - Eold)/temp);
+    double p = std::exp(-(Enew - Eold)/(temp * k_Boltzmann));
     std::uniform_real_distribution<double> dist(0.0, 1.0);
     double u = dist(rng);
     return (u < p);
 }
 
-// Generate one candidate for a given fast slot: uses current SAVE.
-void generate_candidate_for_slot(int slot,
-                                 const Args& cfg,
-                                 const fs::path& root,
-                                 Structure& struc,
-                                 int SUMP)
+
+// Apply one MC proposal move to a Structure.  This is shared by the original
+// fast+slow search mode and the finiteT direct-to-slow mode.
+void apply_random_mc_move(Structure& struc,
+                          const Args& cfg,
+                          int SUMP)
 {
     const int P1 = cfg.p_swap_metal;
     const int P2 = cfg.p_swap_inter;
     const int P3 = cfg.p_exch_metal;
-    const int P4 = cfg.p_exch_inter;
 
-    // 1) Load current accepted state from SAVE.
-    struc.readstruc("SAVE");
-
-    // 2) Random MC move.
     int r = std::rand() % SUMP;
     if (r < P1) {
-        // swapMetal
+        // swapMeta
         int a = std::rand() % struc.num_metallic_atoms;
         int b = std::rand() % struc.num_metallic_atoms;
         while (struc.atomtype[a] == struc.atomtype[b]) {
@@ -164,7 +267,8 @@ void generate_candidate_for_slot(int slot,
         }
         struc.swapMetal(a,b);
     } else if ((r -= P1) < P2) {
-        // swapInterstitial
+        // swapInterstitial: pick one occupied site and one site with a different
+        // occupation state/species.  This preserves the total numbers of B/O.
         int a = std::rand() % struc.num_interstitial;
         while (struc.interstitial_postype[a] == -1)
             a = (a+1) % struc.num_interstitial;
@@ -179,6 +283,20 @@ void generate_candidate_for_slot(int slot,
         // TODO: exchangeInterstitial
         // struc.exchangeInterstitial(...);
     }
+}
+
+// Generate one candidate for a given fast slot: uses current SAVE.
+void generate_candidate_for_slot(int slot,
+                                 const Args& cfg,
+                                 const fs::path& root,
+                                 Structure& struc,
+                                 int SUMP)
+{
+    // 1) Load current accepted state from SAVE.
+    struc.readstruc("SAVE");
+
+    // 2) Random MC move.
+    apply_random_mc_move(struc, cfg, SUMP);
 
     // 3) Dump candidate directly into fast/POSCARk, fast/SAVEk
     fs::path fast_dir = root / "fast";
@@ -193,6 +311,117 @@ void generate_candidate_for_slot(int slot,
     // 4) Trigger fast worker by touching .go_k
     fs::path gof = fast_dir / (".go_" + std::to_string(slot));
     std::ofstream ofs(gof); // touch
+}
+
+
+// Submit the initial unmodified structure directly to the slow-worker queue.
+// This creates a waiting_pool task without going through any fast worker.
+// The first report from this task will be accepted unconditionally as the
+// initial current state by process_report_file() when have_state == false.
+std::string submit_initial_relax_task(const fs::path& root, Structure& struc)
+{
+    fs::path pool = root / "waiting_pool";
+    fs::create_directories(pool);
+
+    auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::string task_id = "initial_relax_" + std::to_string(now_ns);
+
+    fs::path tmpd  = pool / (".tmp_" + task_id);
+    fs::path final = pool / task_id;
+
+    fs::create_directories(tmpd);
+
+    struc.outputvasp((tmpd / "POSCAR").string().c_str());
+    struc.outputsave((tmpd / "SAVE").string().c_str());
+
+    json meta;
+    meta["task_id"] = task_id;
+    meta["source"] = "initial_relax";
+    // Sentinel value: not a physical energy, only used so slow_worker picks
+    // the initial relaxation before any ordinary screened candidates.
+    meta["energy_screen"] = -1.0e99;
+    meta["note"] = "sentinel energy_screen for initial relaxation; not a physical energy";
+    meta["stamp"] = "created_by_cpp_master";
+
+    {
+        std::ofstream ofs(tmpd / "meta.json");
+        ofs << std::setw(2) << meta << "\n";
+    }
+
+    std::error_code ec;
+    fs::rename(tmpd, final, ec);
+    if (ec) {
+        std::cerr << "[ERROR] failed to submit initial relax task: "
+                  << ec.message() << "\n";
+        return "";
+    }
+
+    std::cout << "[INIT] submitted initial structure to slow-worker queue: "
+              << task_id << "\n";
+    return task_id;
+}
+
+
+
+// Submit one finite-temperature MC proposal directly to the slow-worker queue.
+// This bypasses fast_worker and waiting-pool screening.  The master will submit
+// a new task only after the previous one has been processed, so the Markov
+// chain remains sequential.
+std::string submit_finiteT_trial_task(const fs::path& root,
+                                      const Args& cfg,
+                                      Structure& struc,
+                                      int SUMP,
+                                      int next_step)
+{
+    // Load the current accepted chain state.
+    if (!struc.readstruc("SAVE")) {
+        std::cerr << "[finiteT] failed to read current SAVE before trial submission.\n";
+        return "";
+    }
+
+    apply_random_mc_move(struc, cfg, SUMP);
+
+    fs::path pool = root / "waiting_pool";
+    fs::create_directories(pool);
+
+    auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::string task_id = "finiteT_step_" + std::to_string(next_step)
+                        + "_" + std::to_string(now_ns);
+
+    fs::path tmpd  = pool / (".tmp_" + task_id);
+    fs::path final = pool / task_id;
+    fs::create_directories(tmpd);
+
+    struc.outputvasp((tmpd / "POSCAR").string().c_str());
+    struc.outputsave((tmpd / "SAVE").string().c_str());
+
+    json meta;
+    meta["task_id"] = task_id;
+    meta["source"] = "finiteT_direct";
+    meta["mode"] = "finiteT";
+    meta["mc_step_proposal"] = next_step;
+    // There is only one pending finiteT task, so this is not used for screening.
+    meta["energy_screen"] = 0.0;
+    meta["stamp"] = "created_by_cpp_master";
+
+    {
+        std::ofstream ofs(tmpd / "meta.json");
+        ofs << std::setw(2) << meta << "\n";
+    }
+
+    std::error_code ec;
+    fs::rename(tmpd, final, ec);
+    if (ec) {
+        std::cerr << "[finiteT] failed to submit trial task: "
+                  << ec.message() << "\n";
+        return "";
+    }
+
+    std::cout << "[finiteT] submitted trial step " << next_step
+              << " to slow-worker queue: " << task_id << "\n";
+    return task_id;
 }
 
 /* ---------- process a single slow report ---------- */
@@ -212,14 +441,14 @@ bool process_report_file(const fs::path& root,
         std::ifstream ifs(rep_path);
         if (!ifs) {
             std::cerr << "[WARN] cannot open report " << rep_path << "\n";
-            fs::remove(rep_path);
+            cleanup_processed_task(root, "", rep_path, false);
             return false;
         }
         try {
             ifs >> j;
         } catch (...) {
             std::cerr << "[WARN] bad JSON in " << rep_path << "\n";
-            fs::remove(rep_path);
+            cleanup_processed_task(root, "", rep_path, false);
             return false;
         }
     }
@@ -228,7 +457,8 @@ bool process_report_file(const fs::path& root,
     if (status == "error") {
         std::cerr << "[slow] ERROR in report " << rep_path.filename()
                   << ": " << j.value("error", std::string("<no_msg>")) << "\n";
-        fs::remove(rep_path);
+        std::string task_id = j.value("task_id", rep_path.stem().string());
+        cleanup_processed_task(root, task_id, rep_path, true);
         return false;
     }
 
@@ -237,7 +467,7 @@ bool process_report_file(const fs::path& root,
 
     if (!std::isfinite(E_final)) {
         std::cerr << "[WARN] invalid energy_final in report " << rep_path << "\n";
-        fs::remove(rep_path);
+        cleanup_processed_task(root, task_id, rep_path, true);
         return false;
     }
 
@@ -250,7 +480,13 @@ bool process_report_file(const fs::path& root,
         accept_count = 0;
         mc_steps = 0;
 
-        // Update global SAVE, CONTCAR
+        // Update candidate SAVE with relaxed coordinates, then make it current.
+        if (!update_relaxed_save_in_outbox(root, out_dir)) {
+            std::cerr << "[WARN] failed to initialize current state from " << task_id << "\n";
+            // Keep refine_outbox for debugging if updating the initial SAVE failed.
+            cleanup_processed_task(root, task_id, rep_path, false);
+            return false;
+        }
         copy_file_overwrite(out_dir / "SAVE",    root / "SAVE");
         copy_file_overwrite(out_dir / "CONTCAR", root / "CONTCAR");
 
@@ -258,7 +494,7 @@ bool process_report_file(const fs::path& root,
             << " E = " << std::setprecision(12) << E_final << "\n";
         log.flush();
 
-        fs::remove(rep_path);
+        cleanup_processed_task(root, task_id, rep_path, true);
         return true;
     }
 
@@ -276,16 +512,62 @@ bool process_report_file(const fs::path& root,
     if (accept) {
         ++accept_count;
         current_E = E_final;
-        // Update global SAVE & CONTCAR
+        // Update candidate SAVE with relaxed coordinates, then make it current.
+        if (!update_relaxed_save_in_outbox(root, out_dir)) {
+            std::cerr << "[WARN] accepted task could not update SAVE: " << task_id << "\n";
+            // Keep refine_outbox for debugging if an accepted task failed to update.
+            cleanup_processed_task(root, task_id, rep_path, false);
+            return false;
+        }
         copy_file_overwrite(out_dir / "SAVE",  root / "SAVE");
         copy_file_overwrite(out_dir / "CONTCAR", root /"CONTCAR");
-        // Archive
+        // Archive the already-updated relaxed SAVE.
         archive_mc_accept(root, task_id, E_final);
     }
 
-    fs::remove(rep_path);
+    cleanup_processed_task(root, task_id, rep_path, true);
     return true;
 }
+
+// Wait until the initial slow-worker refinement finishes and initializes SAVE/CONTCAR.
+void wait_for_initial_state(const fs::path& root,
+                            double& current_E,
+                            bool& have_state,
+                            int& mc_steps,
+                            int& accept_count,
+                            double temp,
+                            std::mt19937_64& rng,
+                            std::ofstream& log)
+{
+    fs::path reports_dir = root / "reports";
+    std::cout << "[INIT] waiting for initial relaxed state...\n";
+
+    while (!have_state) {
+        bool processed_any = false;
+        for (auto& entry : fs::directory_iterator(reports_dir)) {
+            if (!entry.is_regular_file()) continue;
+            fs::path rep_path = entry.path();
+            if (rep_path.extension() != ".json") continue;
+
+            bool ok = process_report_file(
+                root, rep_path,
+                current_E, have_state,
+                mc_steps, accept_count,
+                temp, rng, log
+            );
+            if (ok) processed_any = true;
+            if (have_state) break;
+        }
+
+        if (!processed_any) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
+
+    std::cout << "[INIT] initial relaxed state is ready. E_current = "
+              << std::setprecision(12) << current_E << "\n";
+}
+
 
 /* ---------- main ---------- */
 
@@ -312,36 +594,45 @@ int main(int argc, char** argv){
     // Load initial structure and output an initial SAVE (used as MC seed)
     Structure struc;
     struc.readstruc(cfg.input_struc.c_str());
+    struc.buildIntsiteMetalNeighborMap(cfg.intsite_neighbor_cutoff);
+    struc.outputIntsiteMetalNeighborMap("intsite_metal_neighbors.dat");
     struc.outputsave("SAVE");
 
     std::ofstream log("mc.log");
-    log << "# MC with waiting_pool, fast=" << cfg.workers
+    log << "# MC mode=" << cfg.mode
+        << " fast=" << cfg.workers
         << " steps=" << cfg.steps
-        << " temp=" << cfg.temp << "\n";
+        << " temp=" << cfg.temp
+        << " intsite_neighbor_cutoff=" << cfg.intsite_neighbor_cutoff << "\n";
 
     bool have_state = false;
     double current_E = 0.0;
     int mc_steps = 0;
     int accept_count = 0;
 
-    // Main loop: keep feeding fast workers and consuming slow reports
+    // First, refine the initial structure directly with the slow-worker path.
+    // This establishes a well-defined relaxed current state and E_current
+    // before any MC candidates are generated.
+    std::string init_task_id = submit_initial_relax_task(ROOT, struc);
+    if (init_task_id.empty()) {
+        std::cerr << "[ERROR] failed to submit initial relaxation task.\n";
+        return 1;
+    }
+    wait_for_initial_state(ROOT, current_E, have_state, mc_steps,
+                           accept_count, cfg.temp, rng, log);
+
+    // Main loop.
+    //   search  mode: original fast+slow workflow; keep fast slots filled.
+    //   finiteT mode: strict sequential chain; submit exactly one direct slow
+    //                 proposal only when no task is pending anywhere.
     while (mc_steps < cfg.steps) {
-        // 1) For each fast slot, if .go_k does not exist, schedule a new candidate.
-        for (int k = 1; k <= cfg.workers; ++k) {
-            fs::path gof = ROOT / "fast" / (".go_" + std::to_string(k));
-            if (fs::exists(gof)) continue;  // slot is busy
-
-            // generate a new candidate and trigger fast worker k
-            generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP);
-        }
-
-        // 2) Poll reports directory for new slow results
+        // 1) Poll reports directory for new slow results first.  In finiteT mode
+        // this usually consumes the single pending trial and advances the chain.
         bool processed_any = false;
         fs::path reports_dir = ROOT / "reports";
         for (auto& entry : fs::directory_iterator(reports_dir)) {
             if (!entry.is_regular_file()) continue;
             fs::path rep_path = entry.path();
-            // Only process .json files
             if (rep_path.extension() != ".json") continue;
 
             bool ok = process_report_file(
@@ -355,6 +646,25 @@ int main(int argc, char** argv){
         }
 
         if (mc_steps >= cfg.steps) break;
+
+        if (cfg.mode == "finiteT") {
+            // Only one outstanding proposal is allowed.  This keeps the chain:
+            // current -> one proposal -> slow refine -> accept/reject -> next.
+            if (!has_pending_slow_task(ROOT)) {
+                std::string tid = submit_finiteT_trial_task(
+                    ROOT, cfg, struc, SUMP, mc_steps + 1
+                );
+                if (!tid.empty()) processed_any = true;
+            }
+        } else {
+            // Original search mode: keep each fast-worker slot filled.
+            for (int k = 1; k <= cfg.workers; ++k) {
+                fs::path gof = ROOT / "fast" / (".go_" + std::to_string(k));
+                if (fs::exists(gof)) continue;  // slot is busy
+                generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP);
+                cout << "generating candidate for worker #" << k << " successfully" << endl;
+            }
+        }
 
         if (!processed_any) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));

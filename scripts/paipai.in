@@ -1,183 +1,106 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-########################################
 # Auto-filled by CMake
-########################################
-
 PREFIX="@CMAKE_INSTALL_PREFIX@"
 BINDIR="@CMAKE_INSTALL_FULL_BINDIR@"
-
 MASTER="${BINDIR}/mc_paipai"
 PYTHON="@Python3_EXECUTABLE@"
-
 FAST_WORKER="${BINDIR}/fast_worker.py"
 SLOW_WORKER="${BINDIR}/slow_worker.py"
 
-########################################
-# Default user-configurable values
-########################################
-
-INPUT_STRUC="struc.in"         # initial structure file
+# Defaults
+INPUT_STRUC="struc.in"
 MODEL="GRACE-2L-OMAT"
-DEVICE="cpu"                   # "cpu" or "cuda"
-NUM_FAST=15
-NUM_SLOW=15
-MC_STEPS=2000
-MC_TEMP=0.001
-POOL_CAP=128
-ROOT_DIR="$(pwd)"              # can be overridden by --root
+DEVICE="cpu"
+MODE="finiteT"
 
-# Extra args passed to mc_paipai
+NUM_FAST=0
+NUM_SLOW=1
+NGPU=1
+
+MC_STEPS=200000
+MC_TEMP=700
+POOL_CAP=128
+ROOT_DIR="$(pwd)"
+
+P_SWAP_METAL=1
+P_SWAP_INTER=1
+P_EXCH_METAL=0
+P_EXCH_INTER=0
+INTSITE_NEIGHBOR_CUTOFF=3.5
+
 MC_EXTRA_ARGS=()
 
-########################################
-# Usage / help
-########################################
-
 usage() {
-    cat <<EOF
+cat <<EOF
 Usage: paipai [options]
 
-Options:
-  -i, --input FILE        Initial structure file (default: ${INPUT_STRUC})
-      --model NAME        MLIP model name (default: ${MODEL})
-      --device DEV        Device: cpu | cuda (default: ${DEVICE})
+Basic options:
+  -i, --input FILE              Initial structure file (default: ${INPUT_STRUC})
+  --mode MODE                   search | finiteT (default: ${MODE})
+  --model NAME                  MLIP model name (default: ${MODEL})
+  --device DEV                  cpu | cuda (default: ${DEVICE})
+  --ngpu N                      Number of GPUs for round-robin assignment (default: ${NGPU})
+  --root DIR                    Root working directory (default: current directory)
 
-      --fast N            Number of fast workers (default: ${NUM_FAST})
-      --slow N            Number of slow workers (default: ${NUM_SLOW})
+Worker options:
+  --fast N                      Number of fast workers (default: ${NUM_FAST})
+  --slow N                      Number of slow workers (default: ${NUM_SLOW})
+  --pool-cap N                  Waiting-pool capacity (default: ${POOL_CAP})
 
-      --steps N           Monte Carlo steps (default: ${MC_STEPS})
-      --temp T            Monte Carlo temperature (default: ${MC_TEMP})
+Monte Carlo options:
+  --steps N                     Monte Carlo steps (default: ${MC_STEPS})
+  --temp T                      Monte Carlo temperature (default: ${MC_TEMP})
+  --p-swap-metal N              Weight for metal swap moves (default: ${P_SWAP_METAL})
+  --p-swap-inter N              Weight for interstitial swap moves (default: ${P_SWAP_INTER})
+  --p-exch-metal N              Weight for metal exchange moves (default: ${P_EXCH_METAL})
+  --p-exch-inter N              Weight for interstitial exchange moves (default: ${P_EXCH_INTER})
+  --intsite-neighbor-cutoff X   Cutoff for interstitial-metal neighbor map (default: ${INTSITE_NEIGHBOR_CUTOFF})
 
-      --pool-cap N        Waiting pool capacity (default: ${POOL_CAP})
-      --root DIR          Root working directory (default: current dir)
+Other:
+  -h, --help                    Show this help message
 
-  -h, --help              Show this message and exit
-
-Any unknown options will be passed through to mc_paipai.
+Unknown options are passed directly to mc_paipai.
 EOF
 }
 
-########################################
-# Argument parsing
-########################################
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -i|--input)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --input requires a file argument" >&2
-                exit 1
-            fi
-            INPUT_STRUC="$2"
-            shift 2
-            ;;
-        --model)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --model requires a name argument" >&2
-                exit 1
-            fi
-            MODEL="$2"
-            shift 2
-            ;;
-        --device)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --device requires an argument (cpu|cuda)" >&2
-                exit 1
-            fi
-            DEVICE="$2"
-            shift 2
-            ;;
-        --fast)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --fast requires an integer argument" >&2
-                exit 1
-            fi
-            NUM_FAST="$2"
-            shift 2
-            ;;
-        --slow)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --slow requires an integer argument" >&2
-                exit 1
-            fi
-            NUM_SLOW="$2"
-            shift 2
-            ;;
-        --steps)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --steps requires an integer argument" >&2
-                exit 1
-            fi
-            MC_STEPS="$2"
-            shift 2
-            ;;
-        --temp)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --temp requires a numeric argument" >&2
-                exit 1
-            fi
-            MC_TEMP="$2"
-            shift 2
-            ;;
-        --pool-cap)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --pool-cap requires an integer argument" >&2
-                exit 1
-            fi
-            POOL_CAP="$2"
-            shift 2
-            ;;
-        --root)
-            if [[ $# -lt 2 ]]; then
-                echo "[ERROR] --root requires a directory argument" >&2
-                exit 1
-            fi
-            ROOT_DIR="$2"
-            shift 2
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        --)
-            shift
-            MC_EXTRA_ARGS+=("$@")
-            break
-            ;;
-        *)
-            # Unknown option: pass through to mc_paipai
-            MC_EXTRA_ARGS+=("$1")
-            shift
-            ;;
+        -i|--input) INPUT_STRUC="$2"; shift 2 ;;
+        --mode) MODE="$2"; shift 2 ;;
+        --model) MODEL="$2"; shift 2 ;;
+        --device) DEVICE="$2"; shift 2 ;;
+        --ngpu) NGPU="$2"; shift 2 ;;
+        --root) ROOT_DIR="$2"; shift 2 ;;
+
+        --fast) NUM_FAST="$2"; shift 2 ;;
+        --slow) NUM_SLOW="$2"; shift 2 ;;
+        --pool-cap) POOL_CAP="$2"; shift 2 ;;
+
+        --steps) MC_STEPS="$2"; shift 2 ;;
+        --temp) MC_TEMP="$2"; shift 2 ;;
+        --p-swap-metal) P_SWAP_METAL="$2"; shift 2 ;;
+        --p-swap-inter) P_SWAP_INTER="$2"; shift 2 ;;
+        --p-exch-metal) P_EXCH_METAL="$2"; shift 2 ;;
+        --p-exch-inter) P_EXCH_INTER="$2"; shift 2 ;;
+        --intsite-neighbor-cutoff) INTSITE_NEIGHBOR_CUTOFF="$2"; shift 2 ;;
+
+        -h|--help) usage; exit 0 ;;
+        --) shift; MC_EXTRA_ARGS+=("$@"); break ;;
+        *) MC_EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
-########################################
-# Initialization and directory setup
-########################################
-
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export OPENBLAS_NUM_THREADS=1
-export NUMEXPR_NUM_THREADS=1
-
-echo "[INFO] PREFIX   = $PREFIX"
-echo "[INFO] BINDIR   = $BINDIR"
-echo "[INFO] ROOT_DIR = $ROOT_DIR"
-echo "[INFO] INPUT_STRUC = $INPUT_STRUC"
-echo "[INFO] NUM_FAST = $NUM_FAST, NUM_SLOW = $NUM_SLOW"
-echo "[INFO] MODEL = $MODEL, DEVICE = $DEVICE"
-echo "[INFO] MC_STEPS = $MC_STEPS, MC_TEMP = $MC_TEMP"
-echo "[INFO] POOL_CAP = $POOL_CAP"
-echo "[INFO] MASTER = $MASTER"
-echo "[INFO] PYTHON = $PYTHON"
-echo "[INFO] FAST_WORKER = $FAST_WORKER"
-echo "[INFO] SLOW_WORKER = $SLOW_WORKER"
-if ((${#MC_EXTRA_ARGS[@]} > 0)); then
-    echo "[INFO] Extra args to mc_paipai: ${MC_EXTRA_ARGS[*]}"
+if [[ "$DEVICE" == "cuda" && "$NGPU" -lt 1 ]]; then
+    echo "[ERROR] --ngpu must be >= 1 when --device cuda"
+    exit 1
 fi
+
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 
 mkdir -p "$ROOT_DIR/fast" \
          "$ROOT_DIR/waiting_pool" \
@@ -187,58 +110,105 @@ mkdir -p "$ROOT_DIR/fast" \
          "$ROOT_DIR/counters" \
          "$ROOT_DIR/mcprocess"
 
+PIDS=()
+WORKER_INDEX=0
+
+gpu_for_worker() {
+    local idx="$1"
+    echo $(( idx % NGPU ))
+}
+
 cleanup() {
-    echo "[INFO] Cleaning up: killing all background workers..."
-    kill 0 2>/dev/null || true
+    echo "[INFO] Cleaning up workers..."
+    for pid in "${PIDS[@]:-}"; do
+        kill "$pid" 2>/dev/null || true
+    done
 }
 trap cleanup EXIT INT TERM
 
-########################################
-# Launch fast workers
-########################################
+echo "[INFO] ROOT_DIR = $ROOT_DIR"
+echo "[INFO] INPUT_STRUC = $INPUT_STRUC"
+echo "[INFO] MODE = $MODE"
+echo "[INFO] NUM_FAST = $NUM_FAST, NUM_SLOW = $NUM_SLOW"
+echo "[INFO] MODEL = $MODEL, DEVICE = $DEVICE"
+echo "[INFO] NGPU = $NGPU"
+echo "[INFO] MC_STEPS = $MC_STEPS, MC_TEMP = $MC_TEMP"
+echo "[INFO] POOL_CAP = $POOL_CAP"
+echo "[INFO] Move weights: swap_metal=$P_SWAP_METAL, swap_inter=$P_SWAP_INTER, exch_metal=$P_EXCH_METAL, exch_inter=$P_EXCH_INTER"
+echo "[INFO] INTSITE_NEIGHBOR_CUTOFF = $INTSITE_NEIGHBOR_CUTOFF"
 
-echo "[INFO] Launching $NUM_FAST fast workers..."
-for (( i=1; i<=NUM_FAST; ++i )); do
-    LOG_FAST="${ROOT_DIR}/fast_${i}.log"
-    echo "  -> fast_worker slot $i (log: $LOG_FAST)"
-    "$PYTHON" "$FAST_WORKER" \
-        --slot "$i" \
-        --root "$ROOT_DIR" \
-        --model "$MODEL" \
-        --device "$DEVICE" \
-        --pool_cap "$POOL_CAP" \
-        >"$LOG_FAST" 2>&1 &
-done
+if [[ "$MODE" == "finiteT" ]]; then
+    echo "[INFO] finiteT mode: skipping fast workers."
+else
+    echo "[INFO] Launching $NUM_FAST fast workers..."
+    for (( i=1; i<=NUM_FAST; ++i )); do
+        LOG_FAST="${ROOT_DIR}/fast_${i}.log"
 
-########################################
-# Launch slow workers
-########################################
+        if [[ "$DEVICE" == "cuda" ]]; then
+            GPU_ID=$(gpu_for_worker "$WORKER_INDEX")
+            echo "  -> fast_worker slot $i on GPU $GPU_ID (log: $LOG_FAST)"
+            CUDA_VISIBLE_DEVICES="$GPU_ID" "$PYTHON" "$FAST_WORKER" \
+                --slot "$i" \
+                --root "$ROOT_DIR" \
+                --model "$MODEL" \
+                --device "$DEVICE" \
+                --pool_cap "$POOL_CAP" \
+                >"$LOG_FAST" 2>&1 &
+        else
+            echo "  -> fast_worker slot $i on CPU (log: $LOG_FAST)"
+            "$PYTHON" "$FAST_WORKER" \
+                --slot "$i" \
+                --root "$ROOT_DIR" \
+                --model "$MODEL" \
+                --device "$DEVICE" \
+                --pool_cap "$POOL_CAP" \
+                >"$LOG_FAST" 2>&1 &
+        fi
+
+        PIDS+=("$!")
+        WORKER_INDEX=$((WORKER_INDEX + 1))
+    done
+fi
 
 echo "[INFO] Launching $NUM_SLOW slow workers..."
 for (( j=1; j<=NUM_SLOW; ++j )); do
     ID=$(printf "slow-%02d" "$j")
     LOG_SLOW="${ROOT_DIR}/slow_${ID}.log"
-    echo "  -> slow_worker $ID (log: $LOG_SLOW)"
-    "$PYTHON" "$SLOW_WORKER" \
-        --worker-id "$ID" \
-        --root "$ROOT_DIR" \
-        --model "$MODEL" \
-        --device "$DEVICE" \
-        >"$LOG_SLOW" 2>&1 &
+
+    if [[ "$DEVICE" == "cuda" ]]; then
+        GPU_ID=$(gpu_for_worker "$WORKER_INDEX")
+        echo "  -> slow_worker $ID on GPU $GPU_ID (log: $LOG_SLOW)"
+        CUDA_VISIBLE_DEVICES="$GPU_ID" "$PYTHON" "$SLOW_WORKER" \
+            --worker-id "$ID" \
+            --root "$ROOT_DIR" \
+            --model "$MODEL" \
+            --device "$DEVICE" \
+            >"$LOG_SLOW" 2>&1 &
+    else
+        echo "  -> slow_worker $ID on CPU (log: $LOG_SLOW)"
+        "$PYTHON" "$SLOW_WORKER" \
+            --worker-id "$ID" \
+            --root "$ROOT_DIR" \
+            --model "$MODEL" \
+            --device "$DEVICE" \
+            >"$LOG_SLOW" 2>&1 &
+    fi
+
+    PIDS+=("$!")
+    WORKER_INDEX=$((WORKER_INDEX + 1))
 done
 
-########################################
-# Run the C++ Monte Carlo master
-########################################
-
-echo "[INFO] Running C++ master ..."
-echo "       $MASTER $INPUT_STRUC --workers $NUM_FAST --steps $MC_STEPS --temp $MC_TEMP ${MC_EXTRA_ARGS[*]:-}"
-echo "       (MC progress will be written to mc.log)"
-
+echo "[INFO] Running C++ master..."
 "$MASTER" "$INPUT_STRUC" \
+    --mode "$MODE" \
     --workers "$NUM_FAST" \
     --steps "$MC_STEPS" \
     --temp "$MC_TEMP" \
+    --p-swap-metal "$P_SWAP_METAL" \
+    --p-swap-inter "$P_SWAP_INTER" \
+    --p-exch-metal "$P_EXCH_METAL" \
+    --p-exch-inter "$P_EXCH_INTER" \
+    --intsite-neighbor-cutoff "$INTSITE_NEIGHBOR_CUTOFF" \
     "${MC_EXTRA_ARGS[@]}"
 
-echo "[INFO] C++ master finished. Terminating workers..."
+echo "[INFO] C++ master finished."

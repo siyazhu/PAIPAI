@@ -4,6 +4,7 @@
 #include <vector>
 #include "element.h"
 using namespace std;
+
 class Structure{
 	public:
 		int num_metallic_atoms;
@@ -18,12 +19,21 @@ class Structure{
 		vector<int> num_interstitial_atoms;
 		vector<vector<Real>> interstitial_pos;
 		vector<vector<Real>> pos;
+		vector<vector<int>> intsite_metal_neighbors;
 		Real cell_x1, cell_x2, cell_x3, cell_y1, cell_y2, cell_y3, cell_z1, cell_z2, cell_z3;
+
 		Structure();
 		int readstruc(const char* filename);
 		void outputvasp(const char* filename);
 		void outputsave(const char* filename);
 		void shuffle();
+
+		void buildIntsiteMetalNeighborMap(Real cutoff);
+		void outputIntsiteMetalNeighborMap(const char* filename);
+		int readIntsiteMetalNeighborMap(const char* filename);
+		int updateCoordinatesFromContcar(const char* contcar_filename,
+							 const char* intsite_neighbor_filename);
+
 		Real calculateEnergyORB();
 		Real relaxedEnergyORB();
 		int swapMetal(int a, int b);
@@ -32,4 +42,3 @@ class Structure{
 		int exchangeInterstitial(int a, int type);
 };
 #endif
-
