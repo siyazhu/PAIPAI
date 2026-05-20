@@ -39,6 +39,7 @@ class Structure{
 		int swapMetal(int a, int b);
 		int exchangeMetal(int a, int type);
 		int swapInterstitial(int a, int b);
+		int clusterSwapInterstitial(int a, int b);
 		int exchangeInterstitial(int a, int type);
 };
 #endif

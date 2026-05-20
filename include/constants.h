@@ -5,6 +5,6 @@
 using namespace std;
 
 extern const char* PERIODICTABLE[];
+extern const Real ELEMENT_RADII[];
 extern const Real k_Boltzmann;
 #endif
-

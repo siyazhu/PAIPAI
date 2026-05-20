@@ -1046,6 +1046,51 @@ int Structure::swapInterstitial(int a, int b){
         return(1);
 }
 
+int Structure::clusterSwapInterstitial(int a, int b){
+        if (a<0 || b<0 || a>=num_interstitial || b>=num_interstitial){
+                cout << "Atom number exceeds when cluster-swaping interstitials\n";
+                return(2);
+        }
+        if (interstitial_postype[a] == interstitial_postype[b]){
+                cout << "Same interstitial type when cluster-swaping interstitials\n";
+                return(0);
+        }
+
+        if (a >= (int)intsite_metal_neighbors.size() ||
+            b >= (int)intsite_metal_neighbors.size()){
+                cout << "Interstitial neighbor map is not loaded for cluster move\n";
+                return(4);
+        }
+
+        int ret = swapInterstitial(a, b);
+        if (ret != 1) return ret;
+
+        vector<int> metal_sites;
+        for (int m : intsite_metal_neighbors[a]){
+                if (m >= 0 && m < num_metallic_atoms) metal_sites.push_back(m);
+        }
+        for (int m : intsite_metal_neighbors[b]){
+                if (m >= 0 && m < num_metallic_atoms) metal_sites.push_back(m);
+        }
+
+        sort(metal_sites.begin(), metal_sites.end());
+        metal_sites.erase(unique(metal_sites.begin(), metal_sites.end()),
+                          metal_sites.end());
+
+        if (metal_sites.size() < 2) return(1);
+
+        for (int i = (int)metal_sites.size() - 1; i > 0; i--){
+                int j = rand() % (i + 1);
+                int mi = metal_sites[i];
+                int mj = metal_sites[j];
+                int temptype = atomtype[mi];
+                atomtype[mi] = atomtype[mj];
+                atomtype[mj] = temptype;
+        }
+
+        return(1);
+}
+
 int Structure::exchangeInterstitial(int a, int type){
         if (a<0 || a>=num_interstitial){
                 cout << "Atom number exceeds when exchanging the type of interstitial\n";
@@ -1088,5 +1133,3 @@ Real Structure::relaxedEnergyORB(){
         inputfile >> energy;
         return (energy);
 }
-
-

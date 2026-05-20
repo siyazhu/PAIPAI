@@ -43,6 +43,7 @@ paipai \
   --temp 700 \
   --p-swap-metal 70 \
   --p-swap-inter 30 \
+  --p-cluster-inter 0 \
   --p-exch-metal 0 \
   --p-exch-inter 0 \
   --intsite-neighbor-cutoff 3.5

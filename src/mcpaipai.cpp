@@ -25,6 +25,7 @@ struct Args {
     double temp    = 0.001;      // Metropolis temperature factor
     int p_swap_metal  = 70;
     int p_swap_inter  = 30;
+    int p_cluster_inter = 0;
     int p_exch_metal  = 0;
     int p_exch_inter  = 0;
     double intsite_neighbor_cutoff = 3.5;  // cutoff for interstitial-site metal-neighbor map (Angstrom)
@@ -35,6 +36,7 @@ void print_help(const char* prog){
     std::cout << "Usage: " << prog << " INPUT_STRUCTURE "
               << "[--workers N] [--steps K] [--temp T] "
               << "[--p-swap-metal P] [--p-swap-inter P] "
+              << "[--p-cluster-inter P] "
               << "[--p-exch-metal P] [--p-exch-inter P] "
               << "[--intsite-neighbor-cutoff R] "
               << "[--mode search|finiteT] [--finiteT]\n";
@@ -51,6 +53,7 @@ Args parse_args(int argc, char** argv){
         else if (s=="--temp"){ need("--temp"); a.temp=std::stod(argv[++i]); }
         else if (s=="--p-swap-metal"){ need("--p-swap-metal"); a.p_swap_metal=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-swap-inter"){ need("--p-swap-inter"); a.p_swap_inter=std::max(0, std::stoi(argv[++i])); }
+        else if (s=="--p-cluster-inter"){ need("--p-cluster-inter"); a.p_cluster_inter=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-exch-metal"){ need("--p-exch-metal"); a.p_exch_metal=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-exch-inter"){ need("--p-exch-inter"); a.p_exch_inter=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--intsite-neighbor-cutoff"){ need("--intsite-neighbor-cutoff"); a.intsite_neighbor_cutoff=std::stod(argv[++i]); }
@@ -58,7 +61,8 @@ Args parse_args(int argc, char** argv){
         else if (s=="--finiteT"){ a.mode="finiteT"; }
         else { std::cerr<<"Unknown arg: "<<s<<"\n"; print_help(argv[0]); std::exit(2); }
     }
-    int sum = a.p_swap_metal + a.p_swap_inter + a.p_exch_metal + a.p_exch_inter;
+    int sum = a.p_swap_metal + a.p_swap_inter + a.p_cluster_inter +
+              a.p_exch_metal + a.p_exch_inter;
     if (sum <= 0){
         std::cerr << "MC move probabilities are incorrect. Please check input parameters.\n";
         std::exit(2);
@@ -195,8 +199,8 @@ void archive_mc_accept(const fs::path& root,
 // The candidate SAVE stores the trial occupations in fixed PAIPAI site order.
 // updateCoordinatesFromContcar() then:
 //   - maps CONTCAR metal coordinates back by occupation/type order;
-//   - maps occupied interstitial coordinates back by occupation/type order;
-//   - updates empty interstitial sites by nearby-metal displacement.
+//   - updates all interstitial sites by nearby-metal displacement;
+//   - stores the relaxed lattice vectors from CONTCAR.
 bool update_relaxed_save_in_outbox(const fs::path& root,
                                    const fs::path& out_dir)
 {
@@ -250,11 +254,13 @@ bool Accept(double Eold, double Enew, double temp,
 // fast+slow search mode and the finiteT direct-to-slow mode.
 void apply_random_mc_move(Structure& struc,
                           const Args& cfg,
+                          const fs::path& root,
                           int SUMP)
 {
     const int P1 = cfg.p_swap_metal;
     const int P2 = cfg.p_swap_inter;
-    const int P3 = cfg.p_exch_metal;
+    const int P3 = cfg.p_cluster_inter;
+    const int P4 = cfg.p_exch_metal;
 
     int r = std::rand() % SUMP;
     if (r < P1) {
@@ -277,6 +283,21 @@ void apply_random_mc_move(Structure& struc,
             b = std::rand() % struc.num_interstitial;
         struc.swapInterstitial(a,b);
     } else if ((r -= P2) < P3) {
+        // clusterInterstitialSwap: move an interstitial occupation and shuffle
+        // the metal atom types in the union of the two neighboring cages.
+        fs::path neigh_path = root / "intsite_metal_neighbors.dat";
+        if (!struc.readIntsiteMetalNeighborMap(neigh_path.string().c_str())) {
+            std::cerr << "[WARN] cluster interstitial move skipped because neighbor map could not be read.\n";
+            return;
+        }
+        int a = std::rand() % struc.num_interstitial;
+        while (struc.interstitial_postype[a] == -1)
+            a = (a+1) % struc.num_interstitial;
+        int b = std::rand() % struc.num_interstitial;
+        while (struc.interstitial_postype[b] == struc.interstitial_postype[a])
+            b = std::rand() % struc.num_interstitial;
+        struc.clusterSwapInterstitial(a,b);
+    } else if ((r -= P3) < P4) {
         // TODO: exchangeMetal
         // struc.exchangeMetal(...);
     } else {
@@ -296,7 +317,7 @@ void generate_candidate_for_slot(int slot,
     struc.readstruc("SAVE");
 
     // 2) Random MC move.
-    apply_random_mc_move(struc, cfg, SUMP);
+    apply_random_mc_move(struc, cfg, root, SUMP);
 
     // 3) Dump candidate directly into fast/POSCARk, fast/SAVEk
     fs::path fast_dir = root / "fast";
@@ -380,7 +401,7 @@ std::string submit_finiteT_trial_task(const fs::path& root,
         return "";
     }
 
-    apply_random_mc_move(struc, cfg, SUMP);
+    apply_random_mc_move(struc, cfg, root, SUMP);
 
     fs::path pool = root / "waiting_pool";
     fs::create_directories(pool);
@@ -578,6 +599,7 @@ int main(int argc, char** argv){
 
     Args cfg = parse_args(argc, argv);
     const int SUMP = cfg.p_swap_metal + cfg.p_swap_inter +
+                     cfg.p_cluster_inter +
                      cfg.p_exch_metal + cfg.p_exch_inter;
 
     fs::path ROOT = ".";
@@ -603,6 +625,11 @@ int main(int argc, char** argv){
         << " fast=" << cfg.workers
         << " steps=" << cfg.steps
         << " temp=" << cfg.temp
+        << " p_swap_metal=" << cfg.p_swap_metal
+        << " p_swap_inter=" << cfg.p_swap_inter
+        << " p_cluster_inter=" << cfg.p_cluster_inter
+        << " p_exch_metal=" << cfg.p_exch_metal
+        << " p_exch_inter=" << cfg.p_exch_inter
         << " intsite_neighbor_cutoff=" << cfg.intsite_neighbor_cutoff << "\n";
 
     bool have_state = false;

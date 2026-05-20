@@ -148,6 +148,7 @@ This installs:
 ```text
 $HOME/bin/paipai
 $HOME/bin/mc_paipai
+$HOME/bin/findinter
 $HOME/bin/fast_worker.py
 $HOME/bin/slow_worker.py
 ```
@@ -180,7 +181,75 @@ After installation:
 
 ```bash
 paipai --help
+findinter --help
 ```
+
+For detailed `findinter` guidance, see:
+
+```text
+docs/findinter.md
+```
+
+---
+
+# Building `struc.in` With `findinter`
+
+`findinter` helps generate PAIPAI `struc.in` files from a metal-only POSCAR.
+
+Typical usage:
+
+```bash
+findinter \
+  --input POSCAR \
+  --inter B,O \
+  --internum 4,5 \
+  --output struc.in \
+  --site-poscar interstitial_sites.vasp \
+  --grid 50 \
+  --min-void-factor 1.0 \
+  --max-void-factor 2.0
+```
+
+The first time `findinter` is run in a directory, if `radii.dat` does not exist, it writes a default file and exits. Inspect or edit `radii.dat`, then rerun the same command.
+
+`radii.dat` contains effective hard-sphere radii for the metal species and a single `Interstitial` radius. These radii are site-search parameters, not fixed tabulated atomic radii. The default metal radii are initialized to the minimum built-in radius among the metal species; `Interstitial` is initialized to the minimum built-in radius among the requested interstitial species.
+
+The current algorithm performs a fractional-cell grid scan, keeps points inside a nearest-metal distance window, and then selects sites iteratively from the clearance field. After one interstitial site is selected, all grid points within `2*r_interstitial*min_void_factor` are suppressed to a very large negative clearance so nearby points are removed and surrounding points can become new local maxima in later iterations. It does not optimize large-void packing.
+
+For a 5x5x5 BCC-like NbTaTiHf bulk example with 250 metal atoms, the following effective parameters identify the expected 1500 tetrahedral candidate sites:
+
+```text
+Nb 1.428
+Ta 1.428
+Ti 1.428
+Hf 1.428
+Interstitial 0.55
+```
+
+using:
+
+```bash
+findinter \
+  --input POSCAR_metal_only \
+  --inter B \
+  --internum 4 \
+  --grid 100 \
+  --min-void-factor 0.9 \
+  --max-void-factor 1.2 \
+  --output struc.in \
+  --site-poscar interstitial_sites.vasp
+```
+
+Useful options:
+
+| Option | Description |
+|---|---|
+| `--grid N` | Number of grid points per fractional axis |
+| `--max-sites N` | Maximum candidate sites to write |
+| `--site-poscar FILE` | Optional POSCAR containing the metal atoms plus one H marker atom at every candidate interstitial site |
+| `--min-void-factor X` | Require the nearest-metal distance to satisfy `d >= X*(r_metal+r_interstitial)` |
+| `--max-void-factor X` | Reject sites farther than `X*(r_metal+r_interstitial)` from the nearest metal |
+| `--merge-distance X` | Optional extra merge distance for nearly duplicate selected sites |
 
 ---
 
@@ -207,7 +276,8 @@ paipai \
   --fast 15 \
   --slow 15 \
   --steps 2000 \
-  --temp 10
+  --temp 10 \
+  --p-cluster-inter 0
 ```
 
 A relatively low Monte Carlo temperature is generally recommended for structure search.
@@ -234,7 +304,8 @@ paipai \
   --fast 0 \
   --slow 1 \
   --steps 200000 \
-  --temp 700
+  --temp 700 \
+  --p-cluster-inter 0
 ```
 
 ---
@@ -292,6 +363,7 @@ for example GPU submission scripts.
 | `--temp T` | Monte Carlo temperature |
 | `--p-swap-metal N` | Weight for metal swap moves |
 | `--p-swap-inter N` | Weight for interstitial swap moves |
+| `--p-cluster-inter N` | Weight for cluster interstitial swap moves |
 | `--intsite-neighbor-cutoff X` | Cutoff for interstitial-site neighbor mapping |
 
 ---
@@ -345,7 +417,41 @@ PAIPAI v2.0 now supports two distinct workflows.
 
 ---
 
-## 3. GPU support
+## 3. Cluster interstitial swap move
+
+PAIPAI v2.0-dev includes an optional cluster interstitial move:
+
+- two interstitial sites with different occupations are selected
+- their interstitial occupations are swapped
+- the metal atoms neighboring either interstitial site are collected from `intsite_metal_neighbors.dat`
+- the metal atom types in that neighbor union are randomly shuffled once
+
+This move is controlled by:
+
+```bash
+--p-cluster-inter N
+```
+
+The default value is `0`, so existing runs are unchanged unless this move is explicitly enabled.
+
+---
+
+## 4. `findinter` input builder
+
+PAIPAI v2.0-dev includes `findinter`, a standalone utility for constructing PAIPAI `struc.in` files from metal-only POSCAR files.
+
+`findinter`:
+- generates or reads an effective `radii.dat`
+- scans the periodic cell on a fractional grid
+- identifies candidate interstitial sites using a hard-sphere distance window
+- writes PAIPAI `struc.in`
+- optionally writes a POSCAR visualization with candidate sites marked as H atoms
+
+This is intended as a practical input-building tool for bulk, defect, grain-boundary, and surface structures where interstitial site lists are not already available.
+
+---
+
+## 5. GPU support
 
 PAIPAI v2.0 supports:
 - GPU-accelerated MLIP structural relaxation
@@ -361,7 +467,7 @@ Worker processes can also be distributed across multiple GPUs using round-robin 
 
 ---
 
-## 4. Bug fixes and workflow cleanup
+## 6. Bug fixes and workflow cleanup
 
 PAIPAI v2.0 additionally:
 - fixes overall atomic drift issues

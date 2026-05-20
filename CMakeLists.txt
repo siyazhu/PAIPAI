@@ -17,14 +17,25 @@ add_executable(mc_paipai
     src/structure.cpp
 )
 
-target_include_directories(mc_paipai PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+add_executable(findinter
+    src/constants.cpp
+    src/element.cpp
+    src/findinter.cpp
+    src/findinter_main.cpp
 )
 
+target_include_directories(mc_paipai PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(findinter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 target_compile_options(mc_paipai PRIVATE -O2 -pthread)
+target_compile_options(findinter PRIVATE -O2)
 target_link_libraries(mc_paipai PRIVATE stdc++fs pthread)
 
 install(TARGETS mc_paipai
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(TARGETS findinter
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
