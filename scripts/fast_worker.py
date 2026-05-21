@@ -177,7 +177,7 @@ def main():
         device=args.device,
         verbose=True,
         fmax=args.fmax_screen,
-        max_steps=args.max_steps_screen,
+        steps=args.max_steps_screen,
     )
     sys.stderr.write(f"[fast {k}] initialized @ {ROOT}\n")
 
@@ -208,7 +208,7 @@ def main():
             # run coarse relaxation
             t0 = time.time()
             calc.fmax = args.fmax_screen
-            calc.max_steps = args.max_steps_screen
+            calc.steps = args.max_steps_screen
             res = calc.relax(struct)
             E_screen = float(res["energy"])
             struct_screen = res["final_structure"]
