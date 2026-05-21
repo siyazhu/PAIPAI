@@ -145,7 +145,7 @@ def main():
         device=args.device,
         verbose=True,
         fmax=args.fmax_refine,
-        max_steps=args.max_steps_refine,
+        steps=args.max_steps_refine,
     )
     sys.stderr.write(f"[{args.worker_id}] initialized @ {ROOT}\n")
 
@@ -183,7 +183,7 @@ def main():
 
             t0 = time.time()
             calc.fmax = args.fmax_refine
-            calc.max_steps = args.max_steps_refine
+            calc.steps = args.max_steps_refine
             res = calc.relax(struct)
             E_final = float(res["energy"])
             struct_final = res["final_structure"]
