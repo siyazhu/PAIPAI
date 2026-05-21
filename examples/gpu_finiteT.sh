@@ -18,6 +18,8 @@ module load cuDNN/8.9.2.26-CUDA-12.1.1
 
 source /sw/eb/sw/Anaconda3/2024.02-1/etc/profile.d/conda.sh
 conda activate materialsframework-main
+export PAIPAI_PYTHON="$CONDA_PREFIX/bin/python"
+export PATH="$CONDA_PREFIX/bin:$PATH"
 
 export XLA_FLAGS=--xla_gpu_cuda_data_dir=/sw/eb/sw/CUDA/12.1.1
 
@@ -28,6 +30,7 @@ export NUMEXPR_NUM_THREADS=1
 
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 echo "CONDA_DEFAULT_ENV=$CONDA_DEFAULT_ENV"
+echo "PAIPAI_PYTHON=$PAIPAI_PYTHON"
 echo "which python=$(which python)"
 
 nvidia-smi
