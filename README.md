@@ -7,6 +7,7 @@
 PAIPAI is a versatile computational tool designed to efficiently search for crystalline metallic structures—especially those containing interstitials, point defects, grain boundaries, or surface slabs—with the lowest free energy.
 By combining Monte Carlo sampling techniques with machine-learning interatomic potentials (MLIPs), PAIPAI enables rapid and accurate exploration of vast configurational spaces that are traditionally inaccessible to first-principles methods alone.
 </p>
+</div>
 
 <p>
 PAIPAI is particularly designed for:
