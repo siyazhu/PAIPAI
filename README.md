@@ -27,7 +27,6 @@ PAIPAI supports multi-stage workflows including:
 - Free-energy-aware finite-temperature exploration
 - Parallel execution on HPC clusters
 
-![Workflow diagram](docs/workflow.png)
 
 ## Key Features
 
