@@ -205,7 +205,7 @@ findinter \
   --internum 4,5 \
   --output struc.in \
   --site-poscar interstitial_sites.vasp \
-  --grid 50 \
+  --gn 50 \
   --min-void-factor 1.0 \
   --max-void-factor 2.0
 ```
@@ -233,7 +233,7 @@ findinter \
   --input POSCAR_metal_only \
   --inter B \
   --internum 4 \
-  --grid 100 \
+  --gn 100 \
   --min-void-factor 0.9 \
   --max-void-factor 1.2 \
   --output struc.in \
@@ -244,12 +244,19 @@ Useful options:
 
 | Option | Description |
 |---|---|
-| `--grid N` | Number of grid points per fractional axis |
-| `--max-sites N` | Maximum candidate sites to write |
+| `--gn N` | Use the same grid count `N` along x, y, and z |
+| `--gnx N --gny N --gnz N` | Use explicit grid counts along x, y, and z; all three must be provided together |
+| `--gstep X` | Derive grid counts from a target Cartesian grid step `X` in Angstrom |
+| `--max-sites N` | Maximum candidate sites to write; `0` means no limit |
 | `--site-poscar FILE` | Optional POSCAR containing the metal atoms plus one H marker atom at every candidate interstitial site |
 | `--min-void-factor X` | Require the nearest-metal distance to satisfy `d >= X*(r_metal+r_interstitial)` |
 | `--max-void-factor X` | Reject sites farther than `X*(r_metal+r_interstitial)` from the nearest metal |
 | `--merge-distance X` | Optional extra merge distance for nearly duplicate selected sites |
+
+Exactly one grid-input mode must be used in each `findinter` command:
+- `--gn`
+- `--gnx --gny --gnz`
+- `--gstep`
 
 ---
 

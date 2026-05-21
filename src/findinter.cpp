@@ -111,6 +111,16 @@ Real norm(const Vec3& u) {
     return sqrt(dot(u,u));
 }
 
+int grid_index(int ix, int iy, int iz, int ny, int nz) {
+    return (ix * ny + iy) * nz + iz;
+}
+
+struct GridShape {
+    int nx = 0;
+    int ny = 0;
+    int nz = 0;
+};
+
 bool read_nonempty_line(ifstream& input, string& line) {
     while (getline(input, line)) {
         bool only_space = true;
@@ -311,10 +321,6 @@ bool ensure_radii(const FindInterOptions& options,
     return true;
 }
 
-int grid_index(int ix, int iy, int iz, int n) {
-    return (ix * n + iy) * n + iz;
-}
-
 bool evaluate_grid_point(const MetalStructure& structure,
                          const map<string, Real>& radii,
                          const Vec3& frac,
@@ -352,11 +358,35 @@ bool evaluate_grid_point(const MetalStructure& structure,
     return true;
 }
 
+GridShape resolve_grid_shape(const FindInterOptions& options,
+                             const MetalStructure& structure) {
+    if (options.grid_nx > 0 && options.grid_ny > 0 && options.grid_nz > 0) {
+        return {options.grid_nx, options.grid_ny, options.grid_nz};
+    }
+
+    if (options.grid_step > 0.0) {
+        int nx = max(1, (int)ceil(norm(structure.a) / options.grid_step));
+        int ny = max(1, (int)ceil(norm(structure.b) / options.grid_step));
+        int nz = max(1, (int)ceil(norm(structure.c) / options.grid_step));
+        return {nx, ny, nz};
+    }
+
+    return {0, 0, 0};
+}
+
 vector<Candidate> find_grid_maxima(const FindInterOptions& options,
                                    const MetalStructure& structure,
                                    const map<string, Real>& radii) {
-    int n = options.grid;
-    int total = n*n*n;
+    GridShape grid = resolve_grid_shape(options, structure);
+    int nx = grid.nx;
+    int ny = grid.ny;
+    int nz = grid.nz;
+    if (nx <= 0 || ny <= 0 || nz <= 0) {
+        cerr << "Invalid grid shape." << endl;
+        return {};
+    }
+
+    int total = nx * ny * nz;
     vector<Real> clearance(total, DEAD_CLEARANCE);
     vector<Candidate> grid_candidates(total);
     Real inv[3][3];
@@ -366,15 +396,15 @@ vector<Candidate> find_grid_maxima(const FindInterOptions& options,
     }
 
     Real inter_radius = radii.at("Interstitial");
-    for (int ix = 0; ix < n; ix++) {
-        for (int iy = 0; iy < n; iy++) {
-            for (int iz = 0; iz < n; iz++) {
-                Vec3 frac = {ix / (Real)n,
-                             iy / (Real)n,
-                             iz / (Real)n};
+    for (int ix = 0; ix < nx; ix++) {
+        for (int iy = 0; iy < ny; iy++) {
+            for (int iz = 0; iz < nz; iz++) {
+                Vec3 frac = {ix / (Real)nx,
+                             iy / (Real)ny,
+                             iz / (Real)nz};
                 Candidate cand;
                 cand.ix = ix; cand.iy = iy; cand.iz = iz;
-                int idx = grid_index(ix, iy, iz, n);
+                int idx = grid_index(ix, iy, iz, ny, nz);
                 if (evaluate_grid_point(structure, radii, frac, inter_radius,
                                         options.min_void_factor,
                                         options.max_void_factor, inv, cand)) {
@@ -389,25 +419,25 @@ vector<Candidate> find_grid_maxima(const FindInterOptions& options,
     Real merge_distance = options.merge_distance;
     Real exclusion_distance = 2.0 * inter_radius * options.min_void_factor;
 
-    while ((int)selected.size() < options.max_sites) {
+    while (options.max_sites <= 0 || (int)selected.size() < options.max_sites) {
         Candidate picked;
         bool found_pick = false;
         Real best_pick_clearance = DEAD_CLEARANCE;
 
-        for (int ix = 0; ix < n; ix++) {
-            for (int iy = 0; iy < n; iy++) {
-                for (int iz = 0; iz < n; iz++) {
-                    int idx = grid_index(ix, iy, iz, n);
+        for (int ix = 0; ix < nx; ix++) {
+            for (int iy = 0; iy < ny; iy++) {
+                for (int iz = 0; iz < nz; iz++) {
+                    int idx = grid_index(ix, iy, iz, ny, nz);
                     if (clearance[idx] <= DEAD_CLEARANCE * 0.5) continue;
                     bool is_max = true;
                     for (int dx = -1; dx <= 1 && is_max; dx++) {
                         for (int dy = -1; dy <= 1 && is_max; dy++) {
                             for (int dz = -1; dz <= 1; dz++) {
                                 if (dx == 0 && dy == 0 && dz == 0) continue;
-                                int jx = (ix + dx + n) % n;
-                                int jy = (iy + dy + n) % n;
-                                int jz = (iz + dz + n) % n;
-                                int jdx = grid_index(jx, jy, jz, n);
+                                int jx = (ix + dx + nx) % nx;
+                                int jy = (iy + dy + ny) % ny;
+                                int jz = (iz + dz + nz) % nz;
+                                int jdx = grid_index(jx, jy, jz, ny, nz);
                                 if (clearance[jdx] > clearance[idx]) {
                                     is_max = false;
                                     break;
@@ -572,10 +602,16 @@ int run_findinter(const FindInterOptions& options) {
     map<string, Real> radii;
     if (!ensure_radii(options, structure, radii)) return 2;
 
+    GridShape grid = resolve_grid_shape(options, structure);
+    if (grid.nx <= 0 || grid.ny <= 0 || grid.nz <= 0) return 3;
+
     cout << "Running findinter grid search...\n";
     cout << "  input = " << options.input_poscar << "\n";
     cout << "  output = " << options.output_struc << "\n";
-    cout << "  grid = " << options.grid << "^3\n";
+    cout << "  grid = " << grid.nx << " x " << grid.ny << " x " << grid.nz << "\n";
+    if (options.grid_step > 0.0) {
+        cout << "  grid_step = " << options.grid_step << " A\n";
+    }
     cout << "  min_void_factor = " << options.min_void_factor << "\n";
     cout << "  max_void_factor = " << options.max_void_factor << "\n";
 

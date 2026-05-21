@@ -13,8 +13,11 @@ struct FindInterOptions {
     std::string radii_file = "radii.dat";
     std::vector<int> interstitial_types;
     std::vector<int> interstitial_counts;
-    int grid = 50;
-    int max_sites = 2000;
+    int grid_nx = 0;
+    int grid_ny = 0;
+    int grid_nz = 0;
+    Real grid_step = 0.0;
+    int max_sites = 0;
     Real min_void_factor = 1.0;
     Real max_void_factor = 2.0;
     Real merge_distance = 0.0;

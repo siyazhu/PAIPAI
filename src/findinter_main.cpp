@@ -19,8 +19,10 @@ void print_help(const char* prog) {
          << "  --output FILE                Output PAIPAI struc.in file (default: struc.in)\n"
          << "  --site-poscar FILE           Optional POSCAR with H atoms marking every found interstitial site\n"
          << "  --radii FILE                 Radii file (default: radii.dat)\n"
-         << "  --grid N                     Fractional grid per axis (default: 50)\n"
-         << "  --max-sites N                Maximum sites to write (default: 2000)\n"
+         << "  --gn N                       Use the same grid count N along x, y, and z\n"
+         << "  --gnx N --gny N --gnz N      Use explicit grid counts along x, y, and z\n"
+         << "  --gstep X                    Target Cartesian grid step in Angstrom; grid counts are derived from cell-vector lengths\n"
+         << "  --max-sites N                Maximum sites to write; 0 means no limit (default: 0)\n"
          << "  --min-void-factor X          Require d_nearest >= X*(r_metal+r_inter); default: 1.0\n"
          << "  --max-void-factor X          Reject sites farther than X*(r_metal+r_inter) from nearest metal (default: 2.0)\n"
          << "  --merge-distance X           Optional extra merge distance for nearly duplicate selected sites (default: 0)\n"
@@ -53,6 +55,11 @@ int main(int argc, char** argv) {
     FindInterOptions options;
     string inter_text;
     string internum_text;
+    bool have_gn = false;
+    bool have_gnx = false;
+    bool have_gny = false;
+    bool have_gnz = false;
+    bool have_gstep = false;
 
     if (argc == 1) {
         print_help(argv[0]);
@@ -76,10 +83,26 @@ int main(int argc, char** argv) {
             inter_text = value_after_equal_or_next(arg, i, argc, argv);
         } else if (arg == "--internum" || arg.rfind("--internum=", 0) == 0) {
             internum_text = value_after_equal_or_next(arg, i, argc, argv);
-        } else if (arg == "--grid" || arg.rfind("--grid=", 0) == 0) {
-            options.grid = max(3, stoi(value_after_equal_or_next(arg, i, argc, argv)));
+        } else if (arg == "--gn" || arg.rfind("--gn=", 0) == 0) {
+            int gn = max(1, stoi(value_after_equal_or_next(arg, i, argc, argv)));
+            options.grid_nx = gn;
+            options.grid_ny = gn;
+            options.grid_nz = gn;
+            have_gn = true;
+        } else if (arg == "--gnx" || arg.rfind("--gnx=", 0) == 0) {
+            options.grid_nx = max(1, stoi(value_after_equal_or_next(arg, i, argc, argv)));
+            have_gnx = true;
+        } else if (arg == "--gny" || arg.rfind("--gny=", 0) == 0) {
+            options.grid_ny = max(1, stoi(value_after_equal_or_next(arg, i, argc, argv)));
+            have_gny = true;
+        } else if (arg == "--gnz" || arg.rfind("--gnz=", 0) == 0) {
+            options.grid_nz = max(1, stoi(value_after_equal_or_next(arg, i, argc, argv)));
+            have_gnz = true;
+        } else if (arg == "--gstep" || arg.rfind("--gstep=", 0) == 0) {
+            options.grid_step = stod(value_after_equal_or_next(arg, i, argc, argv));
+            have_gstep = true;
         } else if (arg == "--max-sites" || arg.rfind("--max-sites=", 0) == 0) {
-            options.max_sites = max(1, stoi(value_after_equal_or_next(arg, i, argc, argv)));
+            options.max_sites = max(0, stoi(value_after_equal_or_next(arg, i, argc, argv)));
         } else if (arg == "--min-void-factor" || arg.rfind("--min-void-factor=", 0) == 0) {
             options.min_void_factor = stod(value_after_equal_or_next(arg, i, argc, argv));
         } else if (arg == "--max-void-factor" || arg.rfind("--max-void-factor=", 0) == 0) {
@@ -118,6 +141,23 @@ int main(int argc, char** argv) {
         options.interstitial_counts.push_back(max(0, stoi(count)));
     }
 
+    bool have_xyz_mode = have_gnx || have_gny || have_gnz;
+    int mode_count = 0;
+    if (have_gn) mode_count++;
+    if (have_xyz_mode) mode_count++;
+    if (have_gstep) mode_count++;
+    if (mode_count != 1) {
+        cerr << "Exactly one grid mode must be provided: --gn, --gnx/--gny/--gnz, or --gstep." << endl;
+        return 2;
+    }
+    if (have_xyz_mode && !(have_gnx && have_gny && have_gnz)) {
+        cerr << "--gnx, --gny, and --gnz must all be provided together." << endl;
+        return 2;
+    }
+    if (have_gstep && options.grid_step <= 0.0) {
+        cerr << "--gstep must be > 0." << endl;
+        return 2;
+    }
     if (options.min_void_factor <= 0.0) {
         cerr << "--min-void-factor must be > 0." << endl;
         return 2;
