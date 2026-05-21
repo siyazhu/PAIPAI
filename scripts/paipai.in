@@ -5,7 +5,7 @@ set -euo pipefail
 PREFIX="@CMAKE_INSTALL_PREFIX@"
 BINDIR="@CMAKE_INSTALL_FULL_BINDIR@"
 MASTER="${BINDIR}/mc_paipai"
-PYTHON="@Python3_EXECUTABLE@"
+PYTHON="${PAIPAI_PYTHON:-@Python3_EXECUTABLE@}"
 FAST_WORKER="${BINDIR}/fast_worker.py"
 SLOW_WORKER="${BINDIR}/slow_worker.py"
 
