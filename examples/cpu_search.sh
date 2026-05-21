@@ -16,6 +16,8 @@ module load Anaconda3/2024.02-1
 
 source /sw/eb/sw/Anaconda3/2024.02-1/etc/profile.d/conda.sh
 conda activate materialsframework-main
+export PAIPAI_PYTHON="$CONDA_PREFIX/bin/python"
+export PATH="$CONDA_PREFIX/bin:$PATH"
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -24,6 +26,7 @@ export NUMEXPR_NUM_THREADS=1
 
 echo "CONDA_DEFAULT_ENV=$CONDA_DEFAULT_ENV"
 echo "CONDA_PREFIX=$CONDA_PREFIX"
+echo "PAIPAI_PYTHON=$PAIPAI_PYTHON"
 
 paipai \
   --input struc.in \
