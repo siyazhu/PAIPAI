@@ -23,6 +23,10 @@ MC_STEPS=200000
 MC_TEMP=700
 POOL_CAP=128
 ROOT_DIR="$(pwd)"
+FMAX_SCREEN=0.10
+MAX_STEPS_SCREEN=30
+FMAX_REFINE=0.01
+MAX_STEPS_REFINE=400
 
 P_SWAP_METAL=70
 P_SWAP_INTER=30
@@ -49,6 +53,10 @@ Worker options:
   --fast N                      Number of fast workers (default: ${NUM_FAST})
   --slow N                      Number of slow workers (default: ${NUM_SLOW})
   --pool-cap N                  Waiting-pool capacity (default: ${POOL_CAP})
+  --fmax-screen X               Fast-worker screen fmax (default: ${FMAX_SCREEN})
+  --max-steps-screen N          Fast-worker max screen steps (default: ${MAX_STEPS_SCREEN})
+  --fmax-refine X               Slow-worker refine fmax (default: ${FMAX_REFINE})
+  --max-steps-refine N          Slow-worker max refine steps (default: ${MAX_STEPS_REFINE})
 
 Monte Carlo options:
   --steps N                     Monte Carlo steps (default: ${MC_STEPS})
@@ -79,6 +87,10 @@ while [[ $# -gt 0 ]]; do
         --fast) NUM_FAST="$2"; shift 2 ;;
         --slow) NUM_SLOW="$2"; shift 2 ;;
         --pool-cap) POOL_CAP="$2"; shift 2 ;;
+        --fmax-screen) FMAX_SCREEN="$2"; shift 2 ;;
+        --max-steps-screen) MAX_STEPS_SCREEN="$2"; shift 2 ;;
+        --fmax-refine) FMAX_REFINE="$2"; shift 2 ;;
+        --max-steps-refine) MAX_STEPS_REFINE="$2"; shift 2 ;;
 
         --steps) MC_STEPS="$2"; shift 2 ;;
         --temp) MC_TEMP="$2"; shift 2 ;;
@@ -138,6 +150,7 @@ echo "[INFO] NGPU = $NGPU"
 echo "[INFO] PYTHON = $PYTHON"
 echo "[INFO] MC_STEPS = $MC_STEPS, MC_TEMP = $MC_TEMP"
 echo "[INFO] POOL_CAP = $POOL_CAP"
+echo "[INFO] Relaxation: fmax_screen=$FMAX_SCREEN, max_steps_screen=$MAX_STEPS_SCREEN, fmax_refine=$FMAX_REFINE, max_steps_refine=$MAX_STEPS_REFINE"
 echo "[INFO] Move weights: swap_metal=$P_SWAP_METAL, swap_inter=$P_SWAP_INTER, cluster_inter=$P_CLUSTER_INTER, exch_metal=$P_EXCH_METAL, exch_inter=$P_EXCH_INTER"
 echo "[INFO] INTSITE_NEIGHBOR_CUTOFF = $INTSITE_NEIGHBOR_CUTOFF"
 
@@ -157,6 +170,8 @@ else
                 --model "$MODEL" \
                 --device "$DEVICE" \
                 --pool_cap "$POOL_CAP" \
+                --fmax_screen "$FMAX_SCREEN" \
+                --max_steps_screen "$MAX_STEPS_SCREEN" \
                 >"$LOG_FAST" 2>&1 &
         else
             echo "  -> fast_worker slot $i on CPU (log: $LOG_FAST)"
@@ -166,6 +181,8 @@ else
                 --model "$MODEL" \
                 --device "$DEVICE" \
                 --pool_cap "$POOL_CAP" \
+                --fmax_screen "$FMAX_SCREEN" \
+                --max_steps_screen "$MAX_STEPS_SCREEN" \
                 >"$LOG_FAST" 2>&1 &
         fi
 
@@ -187,6 +204,8 @@ for (( j=1; j<=NUM_SLOW; ++j )); do
             --root "$ROOT_DIR" \
             --model "$MODEL" \
             --device "$DEVICE" \
+            --fmax_refine "$FMAX_REFINE" \
+            --max_steps_refine "$MAX_STEPS_REFINE" \
             >"$LOG_SLOW" 2>&1 &
     else
         echo "  -> slow_worker $ID on CPU (log: $LOG_SLOW)"
@@ -195,6 +214,8 @@ for (( j=1; j<=NUM_SLOW; ++j )); do
             --root "$ROOT_DIR" \
             --model "$MODEL" \
             --device "$DEVICE" \
+            --fmax_refine "$FMAX_REFINE" \
+            --max_steps_refine "$MAX_STEPS_REFINE" \
             >"$LOG_SLOW" 2>&1 &
     fi
 
