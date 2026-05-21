@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="PAIPAI logo" width="160">
+</p>
+
 # Package for Alloy Interstitial Predictions using Artificial Intelligence (PAIPAI)
 
 <p>
