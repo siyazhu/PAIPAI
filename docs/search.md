@@ -60,6 +60,28 @@ The purpose is to help interstitial atoms move together with a partially rearran
 
 ---
 
+# Relaxed Interstitial Reassignment
+
+Search mode allows interstitial atoms to hop between candidate sites during relaxation.
+
+After slow refinement:
+- relaxed interstitial atoms are matched to cage-updated candidate sites
+- the assignment distance is limited by `--interstitial-site-cutoff`
+- the shortest atom-site assignments are taken first
+- one site can receive at most one interstitial atom
+
+If the relaxed atom lands closer to a different valid site, PAIPAI updates the site occupation in the task `SAVE`. The task `CONTCAR` is then rewritten so its atom ordering matches the reassigned occupation state.
+
+The reassignment is logged as:
+
+```text
+SEARCH_REASSIGN task_id=... n_reassigned=...
+```
+
+If no valid one-to-one assignment can be found within the cutoff, the candidate is discarded.
+
+---
+
 # Acceptance Philosophy
 
 Search mode may:

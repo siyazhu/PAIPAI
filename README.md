@@ -48,6 +48,8 @@ Major updates include:
 - GPU-supported MLIP calculations
 - new `search` and `finiteT` modes
 - improved structure-update workflow after relaxation
+- explicit reference-state tracking with `SAVE`, `REFERENCE_SAVE`, and relaxed `CONTCAR`
+- mode-dependent handling of interstitial site hopping
 - reduced relaxation cost
 - cleaner output handling
 - multiple bug fixes
@@ -376,6 +378,7 @@ for example GPU submission scripts.
 | `--p-swap-inter N` | Weight for interstitial swap moves |
 | `--p-cluster-inter N` | Weight for cluster interstitial swap moves |
 | `--intsite-neighbor-cutoff X` | Cutoff for interstitial-site neighbor mapping |
+| `--interstitial-site-cutoff X` | Maximum distance for assigning a relaxed interstitial atom to a reference site |
 
 ---
 
@@ -403,12 +406,17 @@ For interstitial sites:
 intsite_metal_neighbors.dat
 ```
 
-After each relaxation:
-- updated metal coordinates are used to reconstruct interstitial-site coordinates
+PAIPAI now separates the discrete reference state from the relaxed physical structure:
 
-This greatly improves relaxation efficiency and structural continuity.
+- `SAVE` stores the current reference lattice and site occupations.
+- `REFERENCE_SAVE` stores the reference state used to launch a relaxed task.
+- `CONTCAR` stores the relaxed physical coordinates.
 
-However, for relatively open or low-density structures, additional testing is still needed to fully validate robustness.
+When a new trial is generated, PAIPAI seeds the trial `POSCAR` from the current relaxed `CONTCAR` for efficiency. Existing occupied interstitial atoms reuse their relaxed positions when possible. Newly occupied interstitial sites are repositioned from their local relaxed metal cage instead of using stale reference coordinates.
+
+After slow relaxation, interstitial atoms are matched back to candidate sites using `--interstitial-site-cutoff`.
+
+In `finiteT` mode, interstitial hopping during relaxation is rejected so that the Markov chain remains a well-defined site-occupation ensemble. In `search` mode, relaxed interstitial hopping is allowed; PAIPAI reassigns the occupation to the nearest valid site and rewrites the task `CONTCAR` so that its atom ordering remains consistent with the updated `SAVE`.
 
 ---
 
@@ -420,11 +428,13 @@ PAIPAI v2.0 now supports two distinct workflows.
 - dual-worker architecture
 - many-worker parallel execution
 - optimized for structure search and ground-state exploration
+- allows relaxed interstitial atoms to be reassigned to nearby candidate sites
 
 ### `finiteT` mode
 - sequential Markov-chain Monte Carlo
 - single slow-worker workflow
 - unbiased finite-temperature ensemble sampling
+- rejects trials where relaxation moves an interstitial atom to a different site
 
 ---
 

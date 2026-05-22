@@ -247,11 +247,11 @@ def main():
 
         finally:
             # tell C++ "this slot is free again"
-            donef.touch()
             try:
                 gof.unlink()
             except FileNotFoundError:
                 pass
+            donef.touch()
 
     sys.stderr.write(f"[fast {k}] bye\n")
 

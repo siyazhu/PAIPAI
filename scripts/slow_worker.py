@@ -212,6 +212,7 @@ def main():
             save_in = picked / "SAVE"
             if save_in.exists():
                 atomic_copy(save_in, tmpd / "SAVE")
+                atomic_copy(save_in, tmpd / "REFERENCE_SAVE")
 
             os.rename(tmpd, final)
 

@@ -33,6 +33,15 @@ class Structure{
 		int readIntsiteMetalNeighborMap(const char* filename);
 		int updateCoordinatesFromContcar(const char* contcar_filename,
 							 const char* intsite_neighbor_filename);
+		int seedTrialCoordinatesFromContcar(const Structure& current_ref,
+							 const char* contcar_filename,
+							 const char* intsite_neighbor_filename);
+		int reconcileInterstitialSitesFromContcar(const char* contcar_filename,
+							 const char* intsite_neighbor_filename,
+							 int allow_reassign,
+							 Real max_site_distance,
+							 const char* reordered_contcar_filename,
+							 int& n_reassigned);
 
 		Real calculateEnergyORB();
 		Real relaxedEnergyORB();

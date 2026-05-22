@@ -103,17 +103,44 @@ Typical workflow:
 2. Send to worker
 3. Relax structure
 4. Return energy + coordinates
-5. Update SAVE
+5. Reconcile relaxed interstitial atoms with reference sites
 6. Accept/reject
 
 ---
 
-# SAVE Update Logic
+# Reference And Relaxed States
 
-After relaxation:
-- Metals updated directly
-- Occupied interstitials follow CONTCAR
-- Empty sites reconstructed from neighbor displacement
+PAIPAI keeps the discrete Monte Carlo state separate from the relaxed physical structure.
+
+Files:
+- `SAVE`: current reference lattice and site occupations
+- `REFERENCE_SAVE`: reference state used to launch a specific relaxation task
+- `CONTCAR`: relaxed physical coordinates from the worker
+
+The reference site ordering in `SAVE` is fixed. `CONTCAR` is ordered by atom species, so PAIPAI maps relaxed atoms back to reference site ids using the same ordering convention used by `Structure::outputvasp()`.
+
+When generating a new trial `POSCAR`, PAIPAI seeds coordinates from the accepted `CONTCAR` for efficiency:
+- relaxed metal coordinates are reused
+- already occupied interstitial sites reuse their relaxed interstitial coordinates when the site remains occupied
+- newly occupied interstitial sites are placed by updating the target site from its relaxed metal cage
+
+The trial `SAVE` still stores only the reference occupation state.
+
+---
+
+# Interstitial Site Reconciliation
+
+After slow relaxation, relaxed interstitial atoms are assigned back to candidate sites by distance to the cage-updated site positions. The maximum assignment distance is controlled by:
+
+```bash
+--interstitial-site-cutoff
+```
+
+If multiple assignments are possible, PAIPAI greedily assigns the shortest atom-site distances first while enforcing one interstitial per site.
+
+Mode-dependent behavior:
+- `finiteT`: if any relaxed interstitial maps to a different site than the one in the trial reference state, the trial is rejected.
+- `search`: relaxed hopping is allowed; the reference occupation is rewritten to the reassigned sites and `CONTCAR` is reordered to remain consistent with the new `SAVE`.
 
 ---
 
@@ -135,6 +162,7 @@ finiteT mode differs from search mode:
 - Single Markov chain
 - Strict current-state comparison
 - Thermodynamic correctness prioritized
+- Interstitial site hopping during relaxation is rejected
 
 ---
 
@@ -144,3 +172,4 @@ Search mode:
 - Parallel structure exploration
 - Global-best competition
 - Efficiency-focused
+- Relaxed interstitial site hopping is accepted by reassigning site occupations

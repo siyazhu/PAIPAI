@@ -10,6 +10,9 @@
 #include <cmath>
 #include <iomanip>
 #include <optional>
+#include <algorithm>
+#include <limits>
+#include <ctime>
 
 #include "structure.h"   // your Structure class
 #include "json.hpp"      // nlohmann::json single-header
@@ -30,6 +33,7 @@ struct Args {
     int p_exch_inter  = 0;
     double intsite_neighbor_cutoff = 3.5;  // cutoff for interstitial-site metal-neighbor map (Angstrom)
     std::string mode = "search";          // "search" = fast+slow pool; "finiteT" = one direct slow task at a time
+    double interstitial_site_cutoff = 1.5; // max relaxed interstitial distance to assigned site (Angstrom)
 };
 
 void print_help(const char* prog){
@@ -39,7 +43,8 @@ void print_help(const char* prog){
               << "[--p-cluster-inter P] "
               << "[--p-exch-metal P] [--p-exch-inter P] "
               << "[--intsite-neighbor-cutoff R] "
-              << "[--mode search|finiteT] [--finiteT]\n";
+              << "[--mode search|finiteT] [--finiteT] "
+              << "[--interstitial-site-cutoff R]\n";
 }
 
 Args parse_args(int argc, char** argv){
@@ -59,6 +64,7 @@ Args parse_args(int argc, char** argv){
         else if (s=="--intsite-neighbor-cutoff"){ need("--intsite-neighbor-cutoff"); a.intsite_neighbor_cutoff=std::stod(argv[++i]); }
         else if (s=="--mode"){ need("--mode"); a.mode=argv[++i]; }
         else if (s=="--finiteT"){ a.mode="finiteT"; }
+        else if (s=="--interstitial-site-cutoff"){ need("--interstitial-site-cutoff"); a.interstitial_site_cutoff=std::stod(argv[++i]); }
         else { std::cerr<<"Unknown arg: "<<s<<"\n"; print_help(argv[0]); std::exit(2); }
     }
     int sum = a.p_swap_metal + a.p_swap_inter + a.p_cluster_inter +
@@ -70,6 +76,10 @@ Args parse_args(int argc, char** argv){
     if (a.mode != "search" && a.mode != "finiteT") {
         std::cerr << "Unknown --mode: " << a.mode
                   << " (valid: search, finiteT)\n";
+        std::exit(2);
+    }
+    if (a.interstitial_site_cutoff <= 0.0) {
+        std::cerr << "--interstitial-site-cutoff must be positive.\n";
         std::exit(2);
     }
     return a;
@@ -182,6 +192,7 @@ void archive_mc_accept(const fs::path& root,
 
     copy_file_overwrite(out_dir / "CONTCAR",  mc_dir / "CONTCAR");
     copy_file_overwrite(out_dir / "SAVE",     mc_dir / "SAVE");
+    copy_file_overwrite(out_dir / "REFERENCE_SAVE", mc_dir / "REFERENCE_SAVE");
     copy_file_overwrite(out_dir / "meta.json",mc_dir / "meta.json");
 
     std::ofstream info(mc_dir / "info.txt");
@@ -195,47 +206,26 @@ void archive_mc_accept(const fs::path& root,
 }
 
 
-// Update a candidate SAVE using the relaxed CONTCAR before making it current.
-// The candidate SAVE stores the trial occupations in fixed PAIPAI site order.
-// updateCoordinatesFromContcar() then:
-//   - maps CONTCAR metal coordinates back by occupation/type order;
-//   - updates all interstitial sites by nearby-metal displacement;
-//   - stores the relaxed lattice vectors from CONTCAR.
-bool update_relaxed_save_in_outbox(const fs::path& root,
-                                   const fs::path& out_dir)
+Structure make_relaxed_seed_for_trial(const fs::path& root,
+                                      const Structure& current_ref,
+                                      const Structure& trial_ref)
 {
-    fs::path save_path = out_dir / "SAVE";
-    fs::path contcar_path = out_dir / "CONTCAR";
+    Structure trial_init = trial_ref;
+    fs::path contcar_path = root / "CONTCAR";
     fs::path neigh_path = root / "intsite_metal_neighbors.dat";
 
-    if (!fs::exists(save_path)) {
-        std::cerr << "[WARN] missing candidate SAVE: " << save_path << "\n";
-        return false;
-    }
-    if (!fs::exists(contcar_path)) {
-        std::cerr << "[WARN] missing candidate CONTCAR: " << contcar_path << "\n";
-        return false;
-    }
-    if (!fs::exists(neigh_path)) {
-        std::cerr << "[WARN] missing intsite neighbor map: " << neigh_path << "\n";
-        return false;
+    if (!fs::exists(contcar_path) || !fs::exists(neigh_path)) {
+        return trial_init;
     }
 
-    Structure accepted;
-    if (!accepted.readstruc(save_path.string().c_str())) {
-        std::cerr << "[WARN] failed to read candidate SAVE: " << save_path << "\n";
-        return false;
+    if (!trial_init.seedTrialCoordinatesFromContcar(current_ref,
+                                                    contcar_path.string().c_str(),
+                                                    neigh_path.string().c_str())) {
+        std::cerr << "[WARN] failed to seed trial POSCAR from current CONTCAR; "
+                  << "falling back to reference coordinates.\n";
+        trial_init = trial_ref;
     }
-
-    if (!accepted.updateCoordinatesFromContcar(contcar_path.string().c_str(),
-                                               neigh_path.string().c_str())) {
-        std::cerr << "[WARN] failed to update SAVE from CONTCAR for "
-                  << out_dir << "\n";
-        return false;
-    }
-
-    accepted.outputsave(save_path.string().c_str());
-    return true;
+    return trial_init;
 }
 
 // Metropolis acceptance
@@ -249,14 +239,20 @@ bool Accept(double Eold, double Enew, double temp,
     return (u < p);
 }
 
+struct MoveRecord {
+    std::string type = "none";
+    int a = -1;
+    int b = -1;
+};
 
 // Apply one MC proposal move to a Structure.  This is shared by the original
 // fast+slow search mode and the finiteT direct-to-slow mode.
-void apply_random_mc_move(Structure& struc,
-                          const Args& cfg,
-                          const fs::path& root,
-                          int SUMP)
+MoveRecord apply_random_mc_move(Structure& struc,
+                                const Args& cfg,
+                                const fs::path& root,
+                                int SUMP)
 {
+    MoveRecord rec;
     const int P1 = cfg.p_swap_metal;
     const int P2 = cfg.p_swap_inter;
     const int P3 = cfg.p_cluster_inter;
@@ -272,6 +268,7 @@ void apply_random_mc_move(Structure& struc,
             b = std::rand() % struc.num_metallic_atoms;
         }
         struc.swapMetal(a,b);
+        rec = {"swap_metal", a, b};
     } else if ((r -= P1) < P2) {
         // swapInterstitial: pick one occupied site and one site with a different
         // occupation state/species.  This preserves the total numbers of B/O.
@@ -282,13 +279,14 @@ void apply_random_mc_move(Structure& struc,
         while (struc.interstitial_postype[b] == struc.interstitial_postype[a])
             b = std::rand() % struc.num_interstitial;
         struc.swapInterstitial(a,b);
+        rec = {"swap_interstitial", a, b};
     } else if ((r -= P2) < P3) {
         // clusterInterstitialSwap: move an interstitial occupation and shuffle
         // the metal atom types in the union of the two neighboring cages.
         fs::path neigh_path = root / "intsite_metal_neighbors.dat";
         if (!struc.readIntsiteMetalNeighborMap(neigh_path.string().c_str())) {
             std::cerr << "[WARN] cluster interstitial move skipped because neighbor map could not be read.\n";
-            return;
+            return rec;
         }
         int a = std::rand() % struc.num_interstitial;
         while (struc.interstitial_postype[a] == -1)
@@ -297,6 +295,7 @@ void apply_random_mc_move(Structure& struc,
         while (struc.interstitial_postype[b] == struc.interstitial_postype[a])
             b = std::rand() % struc.num_interstitial;
         struc.clusterSwapInterstitial(a,b);
+        rec = {"cluster_swap_interstitial", a, b};
     } else if ((r -= P3) < P4) {
         // TODO: exchangeMetal
         // struc.exchangeMetal(...);
@@ -304,6 +303,7 @@ void apply_random_mc_move(Structure& struc,
         // TODO: exchangeInterstitial
         // struc.exchangeInterstitial(...);
     }
+    return rec;
 }
 
 // Generate one candidate for a given fast slot: uses current SAVE.
@@ -313,11 +313,13 @@ void generate_candidate_for_slot(int slot,
                                  Structure& struc,
                                  int SUMP)
 {
-    // 1) Load current accepted state from SAVE.
+    // 1) Load current discrete reference state from SAVE.
     struc.readstruc("SAVE");
+    Structure current_ref = struc;
 
     // 2) Random MC move.
     apply_random_mc_move(struc, cfg, root, SUMP);
+    Structure trial_init = make_relaxed_seed_for_trial(root, current_ref, struc);
 
     // 3) Dump candidate directly into fast/POSCARk, fast/SAVEk
     fs::path fast_dir = root / "fast";
@@ -326,14 +328,13 @@ void generate_candidate_for_slot(int slot,
     fs::path pos = fast_dir / ("POSCAR" + std::to_string(slot));
     fs::path sav = fast_dir / ("SAVE"   + std::to_string(slot));
 
-    struc.outputvasp(pos.string().c_str());
+    trial_init.outputvasp(pos.string().c_str());
     struc.outputsave(sav.string().c_str());
 
     // 4) Trigger fast worker by touching .go_k
     fs::path gof = fast_dir / (".go_" + std::to_string(slot));
     std::ofstream ofs(gof); // touch
 }
-
 
 // Submit the initial unmodified structure directly to the slow-worker queue.
 // This creates a waiting_pool task without going through any fast worker.
@@ -395,13 +396,15 @@ std::string submit_finiteT_trial_task(const fs::path& root,
                                       int SUMP,
                                       int next_step)
 {
-    // Load the current accepted chain state.
+    // Load the current accepted discrete reference state.
     if (!struc.readstruc("SAVE")) {
         std::cerr << "[finiteT] failed to read current SAVE before trial submission.\n";
         return "";
     }
+    Structure current_ref = struc;
 
     apply_random_mc_move(struc, cfg, root, SUMP);
+    Structure trial_init = make_relaxed_seed_for_trial(root, current_ref, struc);
 
     fs::path pool = root / "waiting_pool";
     fs::create_directories(pool);
@@ -415,7 +418,7 @@ std::string submit_finiteT_trial_task(const fs::path& root,
     fs::path final = pool / task_id;
     fs::create_directories(tmpd);
 
-    struc.outputvasp((tmpd / "POSCAR").string().c_str());
+    trial_init.outputvasp((tmpd / "POSCAR").string().c_str());
     struc.outputsave((tmpd / "SAVE").string().c_str());
 
     json meta;
@@ -452,10 +455,15 @@ bool process_report_file(const fs::path& root,
                          bool& have_state,
                          int& mc_steps,
                          int& accept_count,
+                         const std::string& mode,
+                         double interstitial_site_cutoff,
                          double temp,
                          std::mt19937_64& rng,
-                         std::ofstream& log)
+                         std::ofstream& log,
+                         bool* accepted_state_changed = nullptr)
 {
+    if (accepted_state_changed) *accepted_state_changed = false;
+
     // Parse JSON
     json j;
     {
@@ -493,21 +501,40 @@ bool process_report_file(const fs::path& root,
     }
 
     fs::path out_dir = root / "refine_outbox" / task_id;
+    fs::path contcar_path = out_dir / "CONTCAR";
+    fs::path save_path = out_dir / "SAVE";
+    fs::path neigh_path = root / "intsite_metal_neighbors.dat";
 
     if (!have_state) {
         // First-ever refined structure: treat as initial state.
+        Structure initial_ref;
+        int n_reassigned = 0;
+        if (!initial_ref.readstruc(save_path.string().c_str()) ||
+            !initial_ref.reconcileInterstitialSitesFromContcar(
+                contcar_path.string().c_str(),
+                neigh_path.string().c_str(),
+                1,
+                interstitial_site_cutoff,
+                contcar_path.string().c_str(),
+                n_reassigned)) {
+            std::cerr << "[WARN] failed to reconcile initial interstitial sites for "
+                      << task_id << "\n";
+            cleanup_processed_task(root, task_id, rep_path, false);
+            return false;
+        }
+        if (n_reassigned > 0) {
+            initial_ref.outputsave(save_path.string().c_str());
+            log << "INITIAL_REASSIGN task_id=" << task_id
+                << " n_reassigned=" << n_reassigned << "\n";
+        }
+
         have_state = true;
         current_E  = E_final;
         accept_count = 0;
         mc_steps = 0;
 
-        // Update candidate SAVE with relaxed coordinates, then make it current.
-        if (!update_relaxed_save_in_outbox(root, out_dir)) {
-            std::cerr << "[WARN] failed to initialize current state from " << task_id << "\n";
-            // Keep refine_outbox for debugging if updating the initial SAVE failed.
-            cleanup_processed_task(root, task_id, rep_path, false);
-            return false;
-        }
+        // Keep SAVE as the discrete reference state.  CONTCAR carries the
+        // relaxed physical coordinates used to seed later trial POSCAR files.
         copy_file_overwrite(out_dir / "SAVE",    root / "SAVE");
         copy_file_overwrite(out_dir / "CONTCAR", root / "CONTCAR");
 
@@ -515,8 +542,42 @@ bool process_report_file(const fs::path& root,
             << " E = " << std::setprecision(12) << E_final << "\n";
         log.flush();
 
+        archive_mc_accept(root, task_id, E_final);
+        if (accepted_state_changed) *accepted_state_changed = true;
         cleanup_processed_task(root, task_id, rep_path, true);
         return true;
+    }
+
+    bool allow_interstitial_reassign = (mode == "search");
+    Structure trial_ref;
+    int n_reassigned = 0;
+    bool reconcile_ok =
+        trial_ref.readstruc(save_path.string().c_str()) &&
+        trial_ref.reconcileInterstitialSitesFromContcar(
+            contcar_path.string().c_str(),
+            neigh_path.string().c_str(),
+            allow_interstitial_reassign ? 1 : 0,
+            interstitial_site_cutoff,
+            allow_interstitial_reassign ? contcar_path.string().c_str() : "",
+            n_reassigned);
+
+    if (!reconcile_ok) {
+        ++mc_steps;
+        log << "STEP " << mc_steps
+            << " proposal task_id=" << task_id
+            << " E_new=" << std::setprecision(12) << E_final
+            << " E_old=" << current_E
+            << " -> REJECT_INTERSTITIAL_HOP\n";
+        log.flush();
+        cleanup_processed_task(root, task_id, rep_path, true);
+        return true;
+    }
+
+    if (allow_interstitial_reassign && n_reassigned > 0) {
+        trial_ref.outputsave(save_path.string().c_str());
+        log << "SEARCH_REASSIGN task_id=" << task_id
+            << " n_reassigned=" << n_reassigned << "\n";
+        log.flush();
     }
 
     // Normal MC proposal
@@ -533,17 +594,12 @@ bool process_report_file(const fs::path& root,
     if (accept) {
         ++accept_count;
         current_E = E_final;
-        // Update candidate SAVE with relaxed coordinates, then make it current.
-        if (!update_relaxed_save_in_outbox(root, out_dir)) {
-            std::cerr << "[WARN] accepted task could not update SAVE: " << task_id << "\n";
-            // Keep refine_outbox for debugging if an accepted task failed to update.
-            cleanup_processed_task(root, task_id, rep_path, false);
-            return false;
-        }
+        // Accept the trial's discrete reference state.  Do not overwrite SAVE
+        // with relaxed coordinates; keep CONTCAR as the relaxed physical state.
         copy_file_overwrite(out_dir / "SAVE",  root / "SAVE");
         copy_file_overwrite(out_dir / "CONTCAR", root /"CONTCAR");
-        // Archive the already-updated relaxed SAVE.
         archive_mc_accept(root, task_id, E_final);
+        if (accepted_state_changed) *accepted_state_changed = true;
     }
 
     cleanup_processed_task(root, task_id, rep_path, true);
@@ -556,6 +612,8 @@ void wait_for_initial_state(const fs::path& root,
                             bool& have_state,
                             int& mc_steps,
                             int& accept_count,
+                            const std::string& mode,
+                            double interstitial_site_cutoff,
                             double temp,
                             std::mt19937_64& rng,
                             std::ofstream& log)
@@ -574,6 +632,7 @@ void wait_for_initial_state(const fs::path& root,
                 root, rep_path,
                 current_E, have_state,
                 mc_steps, accept_count,
+                mode, interstitial_site_cutoff,
                 temp, rng, log
             );
             if (ok) processed_any = true;
@@ -630,7 +689,8 @@ int main(int argc, char** argv){
         << " p_cluster_inter=" << cfg.p_cluster_inter
         << " p_exch_metal=" << cfg.p_exch_metal
         << " p_exch_inter=" << cfg.p_exch_inter
-        << " intsite_neighbor_cutoff=" << cfg.intsite_neighbor_cutoff << "\n";
+        << " intsite_neighbor_cutoff=" << cfg.intsite_neighbor_cutoff
+        << " interstitial_site_cutoff=" << cfg.interstitial_site_cutoff << "\n";
 
     bool have_state = false;
     double current_E = 0.0;
@@ -646,7 +706,8 @@ int main(int argc, char** argv){
         return 1;
     }
     wait_for_initial_state(ROOT, current_E, have_state, mc_steps,
-                           accept_count, cfg.temp, rng, log);
+                           accept_count, cfg.mode, cfg.interstitial_site_cutoff,
+                           cfg.temp, rng, log);
 
     // Main loop.
     //   search  mode: original fast+slow workflow; keep fast slots filled.
@@ -662,11 +723,14 @@ int main(int argc, char** argv){
             fs::path rep_path = entry.path();
             if (rep_path.extension() != ".json") continue;
 
+            bool accepted_state_changed = false;
             bool ok = process_report_file(
                 ROOT, rep_path,
                 current_E, have_state,
                 mc_steps, accept_count,
-                cfg.temp, rng, log
+                cfg.mode, cfg.interstitial_site_cutoff,
+                cfg.temp, rng, log,
+                &accepted_state_changed
             );
             if (ok) processed_any = true;
             if (mc_steps >= cfg.steps) break;
@@ -684,11 +748,12 @@ int main(int argc, char** argv){
                 if (!tid.empty()) processed_any = true;
             }
         } else {
-            // Original search mode: keep each fast-worker slot filled.
+            // Search mode: keep fast-worker slots filled.
             for (int k = 1; k <= cfg.workers; ++k) {
                 fs::path gof = ROOT / "fast" / (".go_" + std::to_string(k));
                 if (fs::exists(gof)) continue;  // slot is busy
                 generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP);
+                processed_any = true;
                 cout << "generating candidate for worker #" << k << " successfully" << endl;
             }
         }

@@ -114,8 +114,25 @@ Balance efficiency and physical correctness carefully.
 
 Interstitials may migrate between cages during relaxation.
 
-This may:
-- Corrupt empty-site reconstruction
-- Produce invalid site mappings
+finiteT treats this as an invalid proposal for the discrete interstitial-site ensemble.
 
-Special care is required.
+After relaxation, each interstitial atom is assigned to a candidate site using the cage-updated site positions. The assignment distance is limited by:
+
+```bash
+--interstitial-site-cutoff
+```
+
+If an interstitial atom is closest to a different site than the one occupied in the trial reference state, the proposal is rejected and the chain remains at the previous state.
+
+The rejection is recorded in `mc.log` as:
+
+```text
+REJECT_INTERSTITIAL_HOP
+```
+
+This keeps the sampled state definition clear:
+
+```text
+state = reference interstitial-site occupation
+energy = relaxed energy without changing site identity
+```

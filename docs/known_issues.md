@@ -5,9 +5,14 @@
 Problem:
 - Interstitial atoms may migrate between cages during relaxation.
 
-Potential consequence:
-- Empty-site reconstruction may become invalid.
-- Some interstitial sites may collapse unnaturally close together.
+Current handling:
+- `finiteT` rejects proposals where an interstitial atom relaxes to a different site.
+- `search` allows hopping and reassigns the occupation to the nearest valid site.
+- Assignments must be within `--interstitial-site-cutoff` and one-to-one.
+
+Residual risk:
+- Very dense or nearly degenerate site networks may still require careful cutoff tuning.
+- Search candidates are discarded if no valid one-to-one assignment can be found.
 
 ---
 
@@ -70,6 +75,11 @@ Neighbor-based empty-site reconstruction may become unreliable for:
 - Highly distorted systems
 - Very open structures
 - Large local rearrangements
+
+Mitigation:
+- Inspect `mcprocess/*/REFERENCE_SAVE`, `SAVE`, and `CONTCAR` together.
+- Reduce `--interstitial-site-cutoff` for stricter site identity.
+- Increase it only if valid relaxed sites are being rejected too aggressively.
 
 ---
 

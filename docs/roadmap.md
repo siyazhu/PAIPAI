@@ -2,8 +2,9 @@
 
 ## Short-Term Goals
 
-- Improve finiteT robustness
-- Improve coordinate reconstruction stability
+- Further validate finiteT interstitial-hop rejection on grain boundaries and open structures
+- Further validate search-mode relaxed interstitial reassignment
+- Improve diagnostics for site reassignment and rejected hopping
 - Better logging and diagnostics
 - Cleaner file management
 - Better GPU scheduling

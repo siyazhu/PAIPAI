@@ -909,6 +909,400 @@ int Structure::updateCoordinatesFromContcar(const char* contcar_filename, const 
         return 1;
 }
 
+int Structure::seedTrialCoordinatesFromContcar(const Structure& current_ref,
+                                               const char* contcar_filename,
+                                               const char* intsite_neighbor_filename){
+        vector<vector<Real>> contcar_coords;
+        vector<Real> contcar_a, contcar_b, contcar_c;
+        if (!read_poscar_cart_coords(contcar_filename, contcar_coords,
+                                     &contcar_a, &contcar_b, &contcar_c)){
+                return 0;
+        }
+
+        if (num_metallic_atoms != current_ref.num_metallic_atoms ||
+            num_interstitial != current_ref.num_interstitial ||
+            num_elements != current_ref.num_elements ||
+            num_interstitial_elements != current_ref.num_interstitial_elements){
+                cerr << "Trial/current reference structures are incompatible." << endl;
+                return 0;
+        }
+
+        if (!readIntsiteMetalNeighborMap(intsite_neighbor_filename)){
+                return 0;
+        }
+
+        vector<vector<Real>> old_pos = current_ref.pos;
+        vector<vector<Real>> old_int = current_ref.interstitial_pos;
+        vector<vector<Real>> new_pos = current_ref.pos;
+        vector<vector<Real>> cage_int = current_ref.interstitial_pos;
+        vector<vector<Real>> relaxed_int_by_site(num_interstitial, vector<Real>(3, 0.0));
+        vector<int> has_relaxed_int(num_interstitial, 0);
+        vector<int> metal_seen(num_metallic_atoms, 0);
+
+        int atom_index = 0;
+
+        // CONTCAR is written from the accepted current reference.  Map relaxed
+        // metal coordinates back by the current reference metal-site order, not
+        // by the trial occupation after a possible metal swap.
+        for (int kind = 0; kind < current_ref.num_elements; kind++){
+                for (int i = 0; i < current_ref.num_metallic_atoms; i++){
+                        if (current_ref.atomtype[i] == kind){
+                                if (atom_index >= (int)contcar_coords.size()){
+                                        cerr << "CONTCAR has fewer atoms than expected while reading metal coordinates." << endl;
+                                        return 0;
+                                }
+                                new_pos[i] = contcar_coords[atom_index];
+                                metal_seen[i]++;
+                                atom_index++;
+                        }
+                }
+        }
+
+        for (int m = 0; m < num_metallic_atoms; m++){
+                if (metal_seen[m] != 1){
+                        cerr << "Metal site " << m << " was mapped " << metal_seen[m]
+                             << " times from CONTCAR. Expected exactly once." << endl;
+                        return 0;
+                }
+        }
+
+        // Map relaxed interstitial coordinates back to their current reference
+        // site ids using the same kind/site ordering as outputvasp().
+        for (int kind = 0; kind < current_ref.num_interstitial_elements; kind++){
+                for (int s = 0; s < current_ref.num_interstitial; s++){
+                        if (current_ref.interstitial_postype[s] == kind){
+                                if (atom_index >= (int)contcar_coords.size()){
+                                        cerr << "CONTCAR has fewer atoms than expected while reading interstitial coordinates." << endl;
+                                        return 0;
+                                }
+                                relaxed_int_by_site[s] = contcar_coords[atom_index];
+                                has_relaxed_int[s] = 1;
+                                atom_index++;
+                        }
+                }
+        }
+
+        int expected_total_atoms = current_ref.num_metallic_atoms;
+        for (int k = 0; k < current_ref.num_interstitial_elements; k++){
+                expected_total_atoms += current_ref.num_interstitial_atoms[k];
+        }
+        if ((int)contcar_coords.size() != expected_total_atoms){
+                cerr << "Warning: CONTCAR atom count = " << contcar_coords.size()
+                     << ", expected = " << expected_total_atoms << endl;
+        }
+
+        vector<Real> old_a = make_vec3(current_ref.cell_x1, current_ref.cell_y1, current_ref.cell_z1);
+        vector<Real> old_b = make_vec3(current_ref.cell_x2, current_ref.cell_y2, current_ref.cell_z2);
+        vector<Real> old_c = make_vec3(current_ref.cell_x3, current_ref.cell_y3, current_ref.cell_z3);
+
+        vector<Real> new_a = contcar_a;
+        vector<Real> new_b = contcar_b;
+        vector<Real> new_c = contcar_c;
+
+        Real old_inv[3][3];
+        Real new_inv[3][3];
+        bool has_old_inv = inverse3x3_columns(old_a, old_b, old_c, old_inv);
+        bool has_new_inv = inverse3x3_columns(new_a, new_b, new_c, new_inv);
+
+        if (!has_old_inv || !has_new_inv){
+                cerr << "Warning: cell matrix is singular; trial seeding will not use fractional PBC." << endl;
+        }
+
+        vector<Real> frac_drift(3, 0.0);
+
+        if (has_old_inv && has_new_inv){
+                for (int m = 0; m < num_metallic_atoms; m++){
+                        vector<Real> f_old = cart_to_frac(old_pos[m], old_inv);
+                        vector<Real> f_new = cart_to_frac(new_pos[m], new_inv);
+
+                        vector<Real> df = make_vec3(f_new[0] - f_old[0],
+                                                    f_new[1] - f_old[1],
+                                                    f_new[2] - f_old[2]);
+
+                        df[0] -= round(df[0]);
+                        df[1] -= round(df[1]);
+                        df[2] -= round(df[2]);
+
+                        frac_drift[0] += df[0];
+                        frac_drift[1] += df[1];
+                        frac_drift[2] += df[2];
+                }
+
+                frac_drift[0] /= (Real)num_metallic_atoms;
+                frac_drift[1] /= (Real)num_metallic_atoms;
+                frac_drift[2] /= (Real)num_metallic_atoms;
+
+                for (int m = 0; m < num_metallic_atoms; m++){
+                        vector<Real> f = cart_to_frac(new_pos[m], new_inv);
+
+                        f[0] -= frac_drift[0];
+                        f[1] -= frac_drift[1];
+                        f[2] -= frac_drift[2];
+
+                        f[0] -= floor(f[0]);
+                        f[1] -= floor(f[1]);
+                        f[2] -= floor(f[2]);
+
+                        new_pos[m] = matvec_cell(f[0], f[1], f[2], new_a, new_b, new_c);
+                }
+
+                for (int s = 0; s < num_interstitial; s++){
+                        if (!has_relaxed_int[s]) continue;
+                        vector<Real> f = cart_to_frac(relaxed_int_by_site[s], new_inv);
+
+                        f[0] -= frac_drift[0];
+                        f[1] -= frac_drift[1];
+                        f[2] -= frac_drift[2];
+
+                        f[0] -= floor(f[0]);
+                        f[1] -= floor(f[1]);
+                        f[2] -= floor(f[2]);
+
+                        relaxed_int_by_site[s] = matvec_cell(f[0], f[1], f[2], new_a, new_b, new_c);
+                }
+        }
+
+        vector<vector<Real>> metal_disp(num_metallic_atoms, vector<Real>(3, 0.0));
+        for (int m = 0; m < num_metallic_atoms; m++){
+                if (has_old_inv && has_new_inv){
+                        vector<Real> f_old = cart_to_frac(old_pos[m], old_inv);
+                        vector<Real> f_new = cart_to_frac(new_pos[m], new_inv);
+
+                        vector<Real> df = make_vec3(f_new[0] - f_old[0],
+                                                    f_new[1] - f_old[1],
+                                                    f_new[2] - f_old[2]);
+
+                        df[0] -= round(df[0]);
+                        df[1] -= round(df[1]);
+                        df[2] -= round(df[2]);
+
+                        metal_disp[m] = matvec_cell(df[0], df[1], df[2],
+                                                    new_a, new_b, new_c);
+                }
+                else{
+                        metal_disp[m] = make_vec3(new_pos[m][0] - old_pos[m][0],
+                                                  new_pos[m][1] - old_pos[m][1],
+                                                  new_pos[m][2] - old_pos[m][2]);
+                }
+        }
+
+        for (int s = 0; s < num_interstitial; s++){
+                if (s >= (int)intsite_metal_neighbors.size() || intsite_metal_neighbors[s].size() == 0){
+                        cerr << "Warning: no metal neighbors for interstitial site " << s
+                             << "; its cage-seeded coordinate is unchanged." << endl;
+                        continue;
+                }
+
+                vector<Real> avg(3, 0.0);
+                for (int idx = 0; idx < (int)intsite_metal_neighbors[s].size(); idx++){
+                        int m = intsite_metal_neighbors[s][idx];
+                        avg[0] += metal_disp[m][0];
+                        avg[1] += metal_disp[m][1];
+                        avg[2] += metal_disp[m][2];
+                }
+
+                Real invn = 1.0 / (Real)intsite_metal_neighbors[s].size();
+                cage_int[s][0] = old_int[s][0] + avg[0] * invn;
+                cage_int[s][1] = old_int[s][1] + avg[1] * invn;
+                cage_int[s][2] = old_int[s][2] + avg[2] * invn;
+        }
+
+        if (has_new_inv){
+                for (int s = 0; s < num_interstitial; s++){
+                        vector<Real> f = cart_to_frac(cage_int[s], new_inv);
+
+                        f[0] -= floor(f[0]);
+                        f[1] -= floor(f[1]);
+                        f[2] -= floor(f[2]);
+
+                        cage_int[s] = matvec_cell(f[0], f[1], f[2],
+                                                  new_a, new_b, new_c);
+                }
+        }
+
+        pos = new_pos;
+        for (int s = 0; s < num_interstitial; s++){
+                if (interstitial_postype[s] >= 0 &&
+                    current_ref.interstitial_postype[s] >= 0 &&
+                    has_relaxed_int[s]){
+                        interstitial_pos[s] = relaxed_int_by_site[s];
+                }
+                else{
+                        interstitial_pos[s] = cage_int[s];
+                }
+        }
+
+        cell_x1 = contcar_a[0]; cell_y1 = contcar_a[1]; cell_z1 = contcar_a[2];
+        cell_x2 = contcar_b[0]; cell_y2 = contcar_b[1]; cell_z2 = contcar_b[2];
+        cell_x3 = contcar_c[0]; cell_y3 = contcar_c[1]; cell_z3 = contcar_c[2];
+
+        return 1;
+}
+
+int Structure::reconcileInterstitialSitesFromContcar(const char* contcar_filename,
+                                                     const char* intsite_neighbor_filename,
+                                                     int allow_reassign,
+                                                     Real max_site_distance,
+                                                     const char* reordered_contcar_filename,
+                                                     int& n_reassigned){
+        n_reassigned = 0;
+
+        vector<vector<Real>> contcar_coords;
+        vector<Real> contcar_a, contcar_b, contcar_c;
+        if (!read_poscar_cart_coords(contcar_filename, contcar_coords,
+                                     &contcar_a, &contcar_b, &contcar_c)){
+                return 0;
+        }
+
+        Structure cage = *this;
+        if (!cage.updateCoordinatesFromContcar(contcar_filename, intsite_neighbor_filename)){
+                return 0;
+        }
+
+        vector<vector<Real>> relaxed_pos = pos;
+        vector<int> metal_seen(num_metallic_atoms, 0);
+        struct RelaxedInterstitialAtom {
+                int kind;
+                int original_site;
+                vector<Real> coord;
+        };
+        vector<RelaxedInterstitialAtom> relaxed_inter;
+
+        int atom_index = 0;
+        for (int kind = 0; kind < num_elements; kind++){
+                for (int i = 0; i < num_metallic_atoms; i++){
+                        if (atomtype[i] == kind){
+                                if (atom_index >= (int)contcar_coords.size()){
+                                        cerr << "CONTCAR has fewer atoms than expected while reading metal coordinates." << endl;
+                                        return 0;
+                                }
+                                relaxed_pos[i] = contcar_coords[atom_index];
+                                metal_seen[i]++;
+                                atom_index++;
+                        }
+                }
+        }
+
+        for (int m = 0; m < num_metallic_atoms; m++){
+                if (metal_seen[m] != 1){
+                        cerr << "Metal site " << m << " was mapped " << metal_seen[m]
+                             << " times from CONTCAR. Expected exactly once." << endl;
+                        return 0;
+                }
+        }
+
+        for (int kind = 0; kind < num_interstitial_elements; kind++){
+                for (int s = 0; s < num_interstitial; s++){
+                        if (interstitial_postype[s] == kind){
+                                if (atom_index >= (int)contcar_coords.size()){
+                                        cerr << "CONTCAR has fewer atoms than expected while reading interstitial coordinates." << endl;
+                                        return 0;
+                                }
+                                relaxed_inter.push_back({kind, s, contcar_coords[atom_index]});
+                                atom_index++;
+                        }
+                }
+        }
+
+        int expected_total_atoms = num_metallic_atoms;
+        for (int k = 0; k < num_interstitial_elements; k++){
+                expected_total_atoms += num_interstitial_atoms[k];
+        }
+        if ((int)contcar_coords.size() != expected_total_atoms){
+                cerr << "Warning: CONTCAR atom count = " << contcar_coords.size()
+                     << ", expected = " << expected_total_atoms << endl;
+        }
+
+        vector<Real> a = make_vec3(cage.cell_x1, cage.cell_y1, cage.cell_z1);
+        vector<Real> b = make_vec3(cage.cell_x2, cage.cell_y2, cage.cell_z2);
+        vector<Real> c = make_vec3(cage.cell_x3, cage.cell_y3, cage.cell_z3);
+        Real inv[3][3];
+        bool has_inv = inverse3x3_columns(a, b, c, inv);
+
+        struct PairCandidate {
+                int atom;
+                int site;
+                Real d2;
+        };
+        vector<PairCandidate> pairs;
+        pairs.reserve(relaxed_inter.size() * (size_t)num_interstitial);
+
+        for (int ai = 0; ai < (int)relaxed_inter.size(); ai++){
+                for (int s = 0; s < num_interstitial; s++){
+                        vector<Real> d = make_vec3(relaxed_inter[ai].coord[0] - cage.interstitial_pos[s][0],
+                                                   relaxed_inter[ai].coord[1] - cage.interstitial_pos[s][1],
+                                                   relaxed_inter[ai].coord[2] - cage.interstitial_pos[s][2]);
+                        if (has_inv) d = minimum_image_delta(d, a, b, c, inv);
+                        pairs.push_back({ai, s, dot3(d, d)});
+                }
+        }
+
+        sort(pairs.begin(), pairs.end(),
+             [](const PairCandidate& x, const PairCandidate& y){ return x.d2 < y.d2; });
+
+        vector<int> atom_to_site(relaxed_inter.size(), -1);
+        vector<int> site_to_atom(num_interstitial, -1);
+        for (const PairCandidate& p : pairs){
+                if (atom_to_site[p.atom] >= 0) continue;
+                if (site_to_atom[p.site] >= 0) continue;
+                if (max_site_distance > 0.0 &&
+                    p.d2 > max_site_distance * max_site_distance) continue;
+                atom_to_site[p.atom] = p.site;
+                site_to_atom[p.site] = p.atom;
+        }
+
+        for (int ai = 0; ai < (int)atom_to_site.size(); ai++){
+                if (atom_to_site[ai] < 0){
+                        cerr << "Relaxed interstitial atom " << ai
+                             << " is farther than max_site_distance from every site." << endl;
+                        return 0;
+                }
+        }
+
+        if (!allow_reassign){
+                for (int ai = 0; ai < (int)relaxed_inter.size(); ai++){
+                        if (atom_to_site[ai] != relaxed_inter[ai].original_site){
+                                cerr << "Interstitial site hopping detected: original site "
+                                     << relaxed_inter[ai].original_site
+                                     << " relaxed nearest assigned site "
+                                     << atom_to_site[ai] << endl;
+                                return 0;
+                        }
+                }
+        }
+
+        vector<int> new_postype(num_interstitial, -1);
+        vector<vector<Real>> relaxed_int_pos = cage.interstitial_pos;
+        for (int ai = 0; ai < (int)relaxed_inter.size(); ai++){
+                int s = atom_to_site[ai];
+                new_postype[s] = relaxed_inter[ai].kind;
+                relaxed_int_pos[s] = relaxed_inter[ai].coord;
+                if (s != relaxed_inter[ai].original_site) n_reassigned++;
+        }
+
+        vector<int> new_counts(num_interstitial_elements, 0);
+        for (int s = 0; s < num_interstitial; s++){
+                if (new_postype[s] >= 0 && new_postype[s] < num_interstitial_elements){
+                        new_counts[new_postype[s]]++;
+                }
+        }
+
+        interstitial_postype = new_postype;
+        num_interstitial_atoms = new_counts;
+
+        if (reordered_contcar_filename != nullptr && string(reordered_contcar_filename).size() > 0){
+                Structure relaxed = *this;
+                relaxed.pos = relaxed_pos;
+                relaxed.interstitial_pos = relaxed_int_pos;
+                relaxed.cell_x1 = contcar_a[0]; relaxed.cell_y1 = contcar_a[1]; relaxed.cell_z1 = contcar_a[2];
+                relaxed.cell_x2 = contcar_b[0]; relaxed.cell_y2 = contcar_b[1]; relaxed.cell_z2 = contcar_b[2];
+                relaxed.cell_x3 = contcar_c[0]; relaxed.cell_y3 = contcar_c[1]; relaxed.cell_z3 = contcar_c[2];
+                relaxed.outputvasp(reordered_contcar_filename);
+        }
+
+        return 1;
+}
+
 void Structure::outputsave(const char* filename){
         ofstream outputfile(filename);
         cout << "OUTPUT TO SAVE\n";
