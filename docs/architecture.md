@@ -141,6 +141,8 @@ Required state files:
 
 The resumed `SAVE` is the accepted reference state. This is important for search outputs because `SAVE` may include relaxed interstitial reassignment, while `REFERENCE_SAVE` only records the trial before relaxation.
 
+If `--resume-state` points at an `mcprocess` directory rather than one numbered state, PAIPAI selects the latest numbered child directory. Resume mode does not require an input structure file.
+
 ---
 
 # Interstitial Site Reconciliation

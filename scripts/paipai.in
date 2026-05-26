@@ -46,13 +46,13 @@ cat <<EOF
 Usage: paipai [options]
 
 Basic options:
-  -i, --input FILE              Initial structure file (default: ${INPUT_STRUC})
+  -i, --input FILE              Initial structure file (not required with --resume-state; default: ${INPUT_STRUC})
   --mode MODE                   search | finiteT (default: ${MODE})
   --model NAME                  MLIP model name (default: ${MODEL})
   --device DEV                  cpu | cuda (default: ${DEVICE})
   --ngpu N                      Number of GPUs for round-robin assignment (default: ${NGPU})
   --root DIR                    Root working directory (default: current directory)
-  --resume-state DIR            Resume finiteT from an existing state directory containing SAVE, CONTCAR, and energy
+  --resume-state DIR            Resume finiteT from a state directory, or from the latest numbered child if DIR is mcprocess
 
 Worker options:
   --fast N                      Number of fast workers (default: ${NUM_FAST})
@@ -132,7 +132,11 @@ abs_path() {
 }
 
 ROOT_DIR="$(abs_path "$ROOT_DIR")"
-INPUT_STRUC="$(abs_path "$INPUT_STRUC")"
+if [[ -n "$RESUME_STATE" && "$INPUT_STRUC" == "struc.in" ]]; then
+    INPUT_STRUC=""
+else
+    INPUT_STRUC="$(abs_path "$INPUT_STRUC")"
+fi
 if [[ -n "$RESUME_STATE" ]]; then
     RESUME_STATE="$(abs_path "$RESUME_STATE")"
 fi
@@ -140,6 +144,11 @@ fi
 MC_RESUME_ARGS=()
 if [[ -n "$RESUME_STATE" ]]; then
     MC_RESUME_ARGS+=(--resume-state "$RESUME_STATE")
+fi
+
+MC_INPUT_ARGS=()
+if [[ -n "$INPUT_STRUC" ]]; then
+    MC_INPUT_ARGS+=("$INPUT_STRUC")
 fi
 
 if [[ "$DEVICE" == "cuda" && "$NGPU" -lt 1 ]]; then
@@ -177,7 +186,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[INFO] ROOT_DIR = $ROOT_DIR"
-echo "[INFO] INPUT_STRUC = $INPUT_STRUC"
+echo "[INFO] INPUT_STRUC = ${INPUT_STRUC:-<resume-state>}"
 echo "[INFO] MODE = $MODE"
 echo "[INFO] RESUME_STATE = ${RESUME_STATE:-<none>}"
 echo "[INFO] NUM_FAST = $NUM_FAST, NUM_SLOW = $NUM_SLOW"
@@ -263,7 +272,7 @@ done
 echo "[INFO] Running C++ master..."
 (
     cd "$ROOT_DIR"
-    "$MASTER" "$INPUT_STRUC" \
+    "$MASTER" "${MC_INPUT_ARGS[@]}" \
         --mode "$MODE" \
         --workers "$NUM_FAST" \
         --steps "$MC_STEPS" \

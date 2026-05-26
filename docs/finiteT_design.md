@@ -73,6 +73,14 @@ finiteT can start from a state previously accepted during search:
 paipai --mode finiteT --resume-state search/mcprocess/000031 --temp 700
 ```
 
+`--input` is not required in resume mode. The resume target can also be the `mcprocess` directory itself:
+
+```bash
+paipai --mode finiteT --resume-state search/mcprocess --temp 700
+```
+
+PAIPAI then selects the latest numbered child directory as the initial state.
+
 The resume directory should contain:
 - `SAVE`: reference lattice and occupation after any search-mode reassignment
 - `CONTCAR`: relaxed physical coordinates

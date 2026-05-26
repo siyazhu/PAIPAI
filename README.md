@@ -349,12 +349,12 @@ for example GPU submission scripts.
 
 | Option | Description |
 |---|---|
-| `--input FILE` | Input structure file |
+| `--input FILE` | Input structure file. Not required when `--resume-state` is used |
 | `--mode MODE` | `search` or `finiteT` |
 | `--device DEV` | `cpu` or `cuda` |
 | `--model NAME` | MLIP model |
 | `--root DIR` | Working directory. If omitted for `finiteT --resume-state`, PAIPAI uses `finiteT_<temp>` |
-| `--resume-state DIR` | Start `finiteT` from an existing state directory containing `SAVE`, `CONTCAR`, and `energy` or `meta.json` |
+| `--resume-state DIR` | Start `finiteT` from an existing state directory containing `SAVE`, `CONTCAR`, and `energy` or `meta.json`. If `DIR` is an `mcprocess` directory, the latest numbered state is used |
 
 ---
 
@@ -445,7 +445,13 @@ PAIPAI v2.0 now supports two distinct workflows.
 paipai --mode finiteT --resume-state search/mcprocess/000031 --temp 700
 ```
 
-The resumed state uses `SAVE` as the reference occupation, `CONTCAR` as the relaxed coordinate seed, and `energy` as the current energy. If `--root` is omitted, the run directory defaults to `finiteT_<temp>`, such as `finiteT_700`.
+You can also point directly at an `mcprocess` directory:
+
+```bash
+paipai --mode finiteT --resume-state search/mcprocess --temp 700
+```
+
+In that case PAIPAI uses the latest numbered child directory. The resumed state uses `SAVE` as the reference occupation, `CONTCAR` as the relaxed coordinate seed, and `energy` as the current energy. `--input` is not required in resume mode. If `--root` is omitted, the run directory defaults to `finiteT_<temp>`, such as `finiteT_700`.
 
 ---
 

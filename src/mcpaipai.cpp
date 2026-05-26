@@ -38,7 +38,7 @@ struct Args {
 };
 
 void print_help(const char* prog){
-    std::cout << "Usage: " << prog << " INPUT_STRUCTURE "
+    std::cout << "Usage: " << prog << " [INPUT_STRUCTURE] "
               << "[--workers N] [--steps K] [--temp T] "
               << "[--p-swap-metal P] [--p-swap-inter P] "
               << "[--p-cluster-inter P] "
@@ -51,8 +51,12 @@ void print_help(const char* prog){
 
 Args parse_args(int argc, char** argv){
     if (argc < 2) { print_help(argv[0]); std::exit(2); }
-    Args a; a.input_struc = argv[1];
-    for (int i=2; i<argc; ++i){
+    Args a;
+    int i = 1;
+    if (i < argc && std::string(argv[i]).rfind("-", 0) != 0) {
+        a.input_struc = argv[i++];
+    }
+    for (; i<argc; ++i){
         std::string s = argv[i];
         auto need=[&](const char* name){ if (i+1>=argc){ std::cerr<<"Missing "<<name<<"\n"; std::exit(2);} };
         if (s=="--workers"){ need("--workers"); a.workers=std::max(1, std::stoi(argv[++i])); }
@@ -87,6 +91,11 @@ Args parse_args(int argc, char** argv){
     }
     if (!a.resume_state_dir.empty() && a.mode != "finiteT") {
         std::cerr << "--resume-state is only supported with --mode finiteT\n";
+        std::exit(2);
+    }
+    if (a.resume_state_dir.empty() && a.input_struc.empty()) {
+        std::cerr << "INPUT_STRUCTURE is required unless --resume-state is used.\n";
+        print_help(argv[0]);
         std::exit(2);
     }
     return a;
@@ -129,6 +138,47 @@ std::optional<double> read_resume_energy(const fs::path& resume_dir) {
     return std::nullopt;
 }
 
+bool looks_like_state_dir(const fs::path& dir) {
+    return fs::exists(dir / "SAVE") &&
+           fs::exists(dir / "CONTCAR") &&
+           (fs::exists(dir / "energy") || fs::exists(dir / "meta.json"));
+}
+
+bool is_all_digits(const std::string& s) {
+    if (s.empty()) return false;
+    for (char ch : s) {
+        if (ch < '0' || ch > '9') return false;
+    }
+    return true;
+}
+
+fs::path resolve_resume_state_dir(const fs::path& requested) {
+    if (looks_like_state_dir(requested)) {
+        return requested;
+    }
+
+    fs::path best;
+    std::string best_name;
+    if (!fs::exists(requested) || !fs::is_directory(requested)) {
+        return requested;
+    }
+
+    std::error_code ec;
+    for (auto& entry : fs::directory_iterator(requested, ec)) {
+        if (ec) break;
+        if (!entry.is_directory()) continue;
+        std::string name = entry.path().filename().string();
+        if (!is_all_digits(name)) continue;
+        if (!looks_like_state_dir(entry.path())) continue;
+        if (best.empty() || name > best_name) {
+            best = entry.path();
+            best_name = name;
+        }
+    }
+
+    return best.empty() ? requested : best;
+}
+
 // Copy small file (overwrite).
 void copy_file_overwrite(const fs::path& src, const fs::path& dst) {
     if (!fs::exists(src)) return;
@@ -145,20 +195,21 @@ bool initialize_from_resume_state(const fs::path& root,
                                   int& accept_count,
                                   std::ofstream& log)
 {
-    fs::path save = resume_dir / "SAVE";
-    fs::path contcar = resume_dir / "CONTCAR";
-    auto energy = read_resume_energy(resume_dir);
+    fs::path state_dir = resolve_resume_state_dir(resume_dir);
+    fs::path save = state_dir / "SAVE";
+    fs::path contcar = state_dir / "CONTCAR";
+    auto energy = read_resume_energy(state_dir);
 
     if (!fs::exists(save)) {
-        std::cerr << "[resume] missing SAVE in " << resume_dir << "\n";
+        std::cerr << "[resume] missing SAVE in " << state_dir << "\n";
         return false;
     }
     if (!fs::exists(contcar)) {
-        std::cerr << "[resume] missing CONTCAR in " << resume_dir << "\n";
+        std::cerr << "[resume] missing CONTCAR in " << state_dir << "\n";
         return false;
     }
     if (!energy || !std::isfinite(*energy)) {
-        std::cerr << "[resume] missing valid energy in " << resume_dir
+        std::cerr << "[resume] missing valid energy in " << state_dir
                   << " (expected energy or meta.json)\n";
         return false;
     }
@@ -171,11 +222,12 @@ bool initialize_from_resume_state(const fs::path& root,
     mc_steps = 0;
     accept_count = 0;
 
-    log << "RESUME_STATE dir=" << resume_dir.string()
+    log << "RESUME_STATE requested=" << resume_dir.string()
+        << " resolved=" << state_dir.string()
         << " E = " << std::setprecision(12) << current_E << "\n";
     log.flush();
 
-    std::cout << "[resume] initialized finiteT from " << resume_dir
+    std::cout << "[resume] initialized finiteT from " << state_dir
               << " E_current = " << std::setprecision(12) << current_E << "\n";
     return true;
 }
@@ -788,9 +840,14 @@ int main(int argc, char** argv){
     // Load the reference structure used for MC moves.  In resume mode, the
     // accepted seed SAVE is the authoritative reference state.
     Structure struc;
-    std::string seed_struc = cfg.resume_state_dir.empty()
-        ? cfg.input_struc
-        : (fs::path(cfg.resume_state_dir) / "SAVE").string();
+    fs::path resolved_resume_dir;
+    std::string seed_struc;
+    if (cfg.resume_state_dir.empty()) {
+        seed_struc = cfg.input_struc;
+    } else {
+        resolved_resume_dir = resolve_resume_state_dir(cfg.resume_state_dir);
+        seed_struc = (resolved_resume_dir / "SAVE").string();
+    }
     if (!struc.readstruc(seed_struc.c_str())) {
         std::cerr << "[ERROR] failed to read structure seed: "
                   << seed_struc << "\n";
@@ -822,7 +879,7 @@ int main(int argc, char** argv){
     int accept_count = 0;
 
     if (!cfg.resume_state_dir.empty()) {
-        if (!initialize_from_resume_state(ROOT, cfg.resume_state_dir,
+        if (!initialize_from_resume_state(ROOT, resolved_resume_dir,
                                           current_E, have_state,
                                           mc_steps, accept_count, log)) {
             std::cerr << "[ERROR] failed to initialize from --resume-state.\n";
