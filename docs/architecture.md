@@ -89,6 +89,8 @@ Purpose:
 - Accurate refinement
 - Final energy evaluation
 
+If refinement reaches the configured maximum step count but still returns a final structure and energy, the worker writes that result normally and records `relax_converged` / `relax_max_force` in metadata. This lets the initial relaxation become the starting state even when it has not met the requested force tolerance.
+
 Typical settings:
 - LBFGS
 - Smaller fmax
@@ -125,6 +127,19 @@ When generating a new trial `POSCAR`, PAIPAI seeds coordinates from the accepted
 - newly occupied interstitial sites are placed by updating the target site from its relaxed metal cage
 
 The trial `SAVE` still stores only the reference occupation state.
+
+---
+
+# Resume State
+
+A finiteT run can resume from an accepted state directory, typically one under `search/mcprocess/`.
+
+Required state files:
+- `SAVE`
+- `CONTCAR`
+- `energy` or `meta.json`
+
+The resumed `SAVE` is the accepted reference state. This is important for search outputs because `SAVE` may include relaxed interstitial reassignment, while `REFERENCE_SAVE` only records the trial before relaxation.
 
 ---
 

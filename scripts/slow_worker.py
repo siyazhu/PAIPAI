@@ -118,6 +118,50 @@ def list_pool_sorted_by_energy(pool: Path):
     cands.sort(key=lambda x: x[0])
     return [d for _, d in cands]
 
+def normalize_relax_result(res):
+    """Return energy, final_structure, converged flag, and raw max force if available."""
+    if not isinstance(res, dict):
+        raise RuntimeError("relaxation did not return a result dictionary")
+
+    if "energy" not in res or "final_structure" not in res:
+        raise RuntimeError("relaxation result is missing energy or final_structure")
+
+    converged = res.get("converged", res.get("relax_converged", None))
+    if converged is None:
+        # Some calculators stop at max steps and still return the final geometry
+        # without an explicit convergence flag. Treat that as usable.
+        converged = True
+
+    max_force = res.get("max_force", res.get("fmax", None))
+    if max_force is not None:
+        max_force = float(max_force)
+    return float(res["energy"]), res["final_structure"], bool(converged), max_force
+
+def relax_with_partial_result(calc, struct):
+    """
+    Run relaxation and accept any returned final geometry, even if the
+    calculator marks it unconverged after max_steps. If a calculator raises an
+    exception but attaches a result dictionary, use that partial result too.
+    """
+    try:
+        return normalize_relax_result(calc.relax(struct))
+    except Exception as exc:
+        partial = None
+        for attr in ("result", "results", "relax_result", "relax_results"):
+            candidate = getattr(exc, attr, None)
+            if isinstance(candidate, dict):
+                partial = candidate
+                break
+        if partial is None and getattr(exc, "args", None):
+            for candidate in exc.args:
+                if isinstance(candidate, dict):
+                    partial = candidate
+                    break
+        if partial is None:
+            raise
+        E_final, struct_final, _, max_force = normalize_relax_result(partial)
+        return E_final, struct_final, False, max_force
+
 # ---------- main ----------
 def main():
     import argparse
@@ -184,9 +228,7 @@ def main():
             t0 = time.time()
             calc.fmax = args.fmax_refine
             calc.steps = args.max_steps_refine
-            res = calc.relax(struct)
-            E_final = float(res["energy"])
-            struct_final = res["final_structure"]
+            E_final, struct_final, relax_converged, max_force = relax_with_partial_result(calc, struct)
             elapsed = round(time.time() - t0, 3)
 
             task_id = meta_in.get("task_id", picked.name)
@@ -202,6 +244,8 @@ def main():
                 "energy_final": E_final,
                 "fmax_refine": args.fmax_refine,
                 "max_steps_refine": args.max_steps_refine,
+                "relax_converged": relax_converged,
+                "relax_max_force": max_force,
                 "elapsed_refine_s": elapsed,
                 "worker_id": args.worker_id,
                 "stamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -221,6 +265,8 @@ def main():
                 "task_id": task_id,
                 "energy_final": E_final,
                 "energy_screen": meta_in.get("energy_screen"),
+                "relax_converged": relax_converged,
+                "relax_max_force": max_force,
                 "worker_id": args.worker_id,
                 "stamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             }

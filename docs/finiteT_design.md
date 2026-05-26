@@ -61,6 +61,27 @@ Recommended workflow:
 3. Accept unconditionally
 4. Begin normal MC sampling
 
+If the initial relaxation reaches `--max-steps-refine` before satisfying `--fmax-refine`, PAIPAI still accepts it as the initial state as long as the worker returns a final structure and energy. The worker records `relax_converged` and `relax_max_force` in its metadata so the startup quality remains inspectable.
+
+---
+
+# Resume From Search
+
+finiteT can start from a state previously accepted during search:
+
+```bash
+paipai --mode finiteT --resume-state search/mcprocess/000031 --temp 700
+```
+
+The resume directory should contain:
+- `SAVE`: reference lattice and occupation after any search-mode reassignment
+- `CONTCAR`: relaxed physical coordinates
+- `energy` or `meta.json`: current relaxed energy
+
+When `--resume-state` is used, PAIPAI skips the initial relaxation and begins finiteT sampling from that state. If `--root` is not specified, the launcher uses `finiteT_<temp>` as the working directory.
+
+Use `SAVE`, not `REFERENCE_SAVE`, as the resumed occupation state. `REFERENCE_SAVE` records the pre-relaxation trial, while `SAVE` records the reconciled accepted state.
+
 ---
 
 # Relaxation Accuracy

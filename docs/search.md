@@ -23,6 +23,14 @@ The purpose is to maximize exploration efficiency.
 
 ---
 
+# Step Budget
+
+In search mode, `--steps N` is interpreted as a fast-screening budget.
+
+The master stops once `counters/fast_count` reaches `N`, meaning about `N` structures have been processed by fast workers. This is different from `finiteT`, where `--steps` counts processed MC proposals.
+
+---
+
 # Fast Workers
 
 Purpose:

@@ -34,6 +34,7 @@ struct Args {
     double intsite_neighbor_cutoff = 3.5;  // cutoff for interstitial-site metal-neighbor map (Angstrom)
     std::string mode = "search";          // "search" = fast+slow pool; "finiteT" = one direct slow task at a time
     double interstitial_site_cutoff = 1.5; // max relaxed interstitial distance to assigned site (Angstrom)
+    std::string resume_state_dir;          // existing SAVE/CONTCAR/energy seed for finiteT
 };
 
 void print_help(const char* prog){
@@ -44,7 +45,8 @@ void print_help(const char* prog){
               << "[--p-exch-metal P] [--p-exch-inter P] "
               << "[--intsite-neighbor-cutoff R] "
               << "[--mode search|finiteT] [--finiteT] "
-              << "[--interstitial-site-cutoff R]\n";
+              << "[--interstitial-site-cutoff R] "
+              << "[--resume-state DIR]\n";
 }
 
 Args parse_args(int argc, char** argv){
@@ -65,6 +67,7 @@ Args parse_args(int argc, char** argv){
         else if (s=="--mode"){ need("--mode"); a.mode=argv[++i]; }
         else if (s=="--finiteT"){ a.mode="finiteT"; }
         else if (s=="--interstitial-site-cutoff"){ need("--interstitial-site-cutoff"); a.interstitial_site_cutoff=std::stod(argv[++i]); }
+        else if (s=="--resume-state"){ need("--resume-state"); a.resume_state_dir=argv[++i]; }
         else { std::cerr<<"Unknown arg: "<<s<<"\n"; print_help(argv[0]); std::exit(2); }
     }
     int sum = a.p_swap_metal + a.p_swap_inter + a.p_cluster_inter +
@@ -82,6 +85,10 @@ Args parse_args(int argc, char** argv){
         std::cerr << "--interstitial-site-cutoff must be positive.\n";
         std::exit(2);
     }
+    if (!a.resume_state_dir.empty() && a.mode != "finiteT") {
+        std::cerr << "--resume-state is only supported with --mode finiteT\n";
+        std::exit(2);
+    }
     return a;
 }
 
@@ -95,12 +102,82 @@ std::optional<double> read_energy_text(const fs::path& f){
     return e;
 }
 
+std::optional<double> read_energy_from_meta(const fs::path& f) {
+    if (!fs::exists(f)) return std::nullopt;
+    try {
+        std::ifstream ifs(f);
+        json j;
+        ifs >> j;
+        if (j.contains("energy_final")) {
+            return j.at("energy_final").get<double>();
+        }
+        if (j.contains("E_final")) {
+            return j.at("E_final").get<double>();
+        }
+        if (j.contains("energy")) {
+            return j.at("energy").get<double>();
+        }
+    } catch (...) {
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+std::optional<double> read_resume_energy(const fs::path& resume_dir) {
+    if (auto e = read_energy_text(resume_dir / "energy")) return e;
+    if (auto e = read_energy_from_meta(resume_dir / "meta.json")) return e;
+    return std::nullopt;
+}
+
 // Copy small file (overwrite).
 void copy_file_overwrite(const fs::path& src, const fs::path& dst) {
     if (!fs::exists(src)) return;
     fs::create_directories(dst.parent_path());
     std::error_code ec;
     fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+}
+
+bool initialize_from_resume_state(const fs::path& root,
+                                  const fs::path& resume_dir,
+                                  double& current_E,
+                                  bool& have_state,
+                                  int& mc_steps,
+                                  int& accept_count,
+                                  std::ofstream& log)
+{
+    fs::path save = resume_dir / "SAVE";
+    fs::path contcar = resume_dir / "CONTCAR";
+    auto energy = read_resume_energy(resume_dir);
+
+    if (!fs::exists(save)) {
+        std::cerr << "[resume] missing SAVE in " << resume_dir << "\n";
+        return false;
+    }
+    if (!fs::exists(contcar)) {
+        std::cerr << "[resume] missing CONTCAR in " << resume_dir << "\n";
+        return false;
+    }
+    if (!energy || !std::isfinite(*energy)) {
+        std::cerr << "[resume] missing valid energy in " << resume_dir
+                  << " (expected energy or meta.json)\n";
+        return false;
+    }
+
+    copy_file_overwrite(save, root / "SAVE");
+    copy_file_overwrite(contcar, root / "CONTCAR");
+
+    have_state = true;
+    current_E = *energy;
+    mc_steps = 0;
+    accept_count = 0;
+
+    log << "RESUME_STATE dir=" << resume_dir.string()
+        << " E = " << std::setprecision(12) << current_E << "\n";
+    log.flush();
+
+    std::cout << "[resume] initialized finiteT from " << resume_dir
+              << " E_current = " << std::setprecision(12) << current_E << "\n";
+    return true;
 }
 
 
@@ -172,6 +249,42 @@ int increment_mc_counter(const fs::path& root) {
         ofs << new_idx << "\n";
     }
     return new_idx;
+}
+
+int read_counter_value(const fs::path& root, const std::string& name) {
+    fs::path ctr = root / "counters" / name;
+    int value = 0;
+    if (fs::exists(ctr)) {
+        std::ifstream ifs(ctr);
+        if (ifs) ifs >> value;
+    }
+    return value;
+}
+
+int count_busy_fast_slots(const fs::path& root, int workers) {
+    int busy = 0;
+    for (int k = 1; k <= workers; ++k) {
+        fs::path gof = root / "fast" / (".go_" + std::to_string(k));
+        if (fs::exists(gof)) ++busy;
+    }
+    return busy;
+}
+
+int run_progress_steps(const fs::path& root,
+                       const std::string& mode,
+                       int mc_steps)
+{
+    if (mode == "search") {
+        return read_counter_value(root, "fast_count");
+    }
+    return mc_steps;
+}
+
+bool reached_step_budget(const fs::path& root,
+                         const Args& cfg,
+                         int mc_steps)
+{
+    return run_progress_steps(root, cfg.mode, mc_steps) >= cfg.steps;
 }
 
 // Archive an accepted state into mcprocess/000001/...
@@ -672,9 +785,17 @@ int main(int argc, char** argv){
     fs::create_directories(ROOT / "counters");
     fs::create_directories(ROOT / "mcprocess");
 
-    // Load initial structure and output an initial SAVE (used as MC seed)
+    // Load the reference structure used for MC moves.  In resume mode, the
+    // accepted seed SAVE is the authoritative reference state.
     Structure struc;
-    struc.readstruc(cfg.input_struc.c_str());
+    std::string seed_struc = cfg.resume_state_dir.empty()
+        ? cfg.input_struc
+        : (fs::path(cfg.resume_state_dir) / "SAVE").string();
+    if (!struc.readstruc(seed_struc.c_str())) {
+        std::cerr << "[ERROR] failed to read structure seed: "
+                  << seed_struc << "\n";
+        return 1;
+    }
     struc.buildIntsiteMetalNeighborMap(cfg.intsite_neighbor_cutoff);
     struc.outputIntsiteMetalNeighborMap("intsite_metal_neighbors.dat");
     struc.outputsave("SAVE");
@@ -683,6 +804,7 @@ int main(int argc, char** argv){
     log << "# MC mode=" << cfg.mode
         << " fast=" << cfg.workers
         << " steps=" << cfg.steps
+        << " step_counter=" << (cfg.mode == "search" ? "fast_count" : "mc_steps")
         << " temp=" << cfg.temp
         << " p_swap_metal=" << cfg.p_swap_metal
         << " p_swap_inter=" << cfg.p_swap_inter
@@ -690,30 +812,41 @@ int main(int argc, char** argv){
         << " p_exch_metal=" << cfg.p_exch_metal
         << " p_exch_inter=" << cfg.p_exch_inter
         << " intsite_neighbor_cutoff=" << cfg.intsite_neighbor_cutoff
-        << " interstitial_site_cutoff=" << cfg.interstitial_site_cutoff << "\n";
+        << " interstitial_site_cutoff=" << cfg.interstitial_site_cutoff
+        << " resume_state=" << (cfg.resume_state_dir.empty() ? "<none>" : cfg.resume_state_dir)
+        << "\n";
 
     bool have_state = false;
     double current_E = 0.0;
     int mc_steps = 0;
     int accept_count = 0;
 
-    // First, refine the initial structure directly with the slow-worker path.
-    // This establishes a well-defined relaxed current state and E_current
-    // before any MC candidates are generated.
-    std::string init_task_id = submit_initial_relax_task(ROOT, struc);
-    if (init_task_id.empty()) {
-        std::cerr << "[ERROR] failed to submit initial relaxation task.\n";
-        return 1;
+    if (!cfg.resume_state_dir.empty()) {
+        if (!initialize_from_resume_state(ROOT, cfg.resume_state_dir,
+                                          current_E, have_state,
+                                          mc_steps, accept_count, log)) {
+            std::cerr << "[ERROR] failed to initialize from --resume-state.\n";
+            return 1;
+        }
+    } else {
+        // First, refine the initial structure directly with the slow-worker path.
+        // This establishes a well-defined relaxed current state and E_current
+        // before any MC candidates are generated.
+        std::string init_task_id = submit_initial_relax_task(ROOT, struc);
+        if (init_task_id.empty()) {
+            std::cerr << "[ERROR] failed to submit initial relaxation task.\n";
+            return 1;
+        }
+        wait_for_initial_state(ROOT, current_E, have_state, mc_steps,
+                               accept_count, cfg.mode, cfg.interstitial_site_cutoff,
+                               cfg.temp, rng, log);
     }
-    wait_for_initial_state(ROOT, current_E, have_state, mc_steps,
-                           accept_count, cfg.mode, cfg.interstitial_site_cutoff,
-                           cfg.temp, rng, log);
 
     // Main loop.
-    //   search  mode: original fast+slow workflow; keep fast slots filled.
-    //   finiteT mode: strict sequential chain; submit exactly one direct slow
-    //                 proposal only when no task is pending anywhere.
-    while (mc_steps < cfg.steps) {
+    //   search  mode: stop when fast workers have screened cfg.steps trials.
+    //   finiteT mode: strict sequential chain; stop after cfg.steps processed
+    //                 MC proposals.
+    while (!reached_step_budget(ROOT, cfg, mc_steps)) {
         // 1) Poll reports directory for new slow results first.  In finiteT mode
         // this usually consumes the single pending trial and advances the chain.
         bool processed_any = false;
@@ -733,10 +866,10 @@ int main(int argc, char** argv){
                 &accepted_state_changed
             );
             if (ok) processed_any = true;
-            if (mc_steps >= cfg.steps) break;
+            if (reached_step_budget(ROOT, cfg, mc_steps)) break;
         }
 
-        if (mc_steps >= cfg.steps) break;
+        if (reached_step_budget(ROOT, cfg, mc_steps)) break;
 
         if (cfg.mode == "finiteT") {
             // Only one outstanding proposal is allowed.  This keeps the chain:
@@ -750,6 +883,10 @@ int main(int argc, char** argv){
         } else {
             // Search mode: keep fast-worker slots filled.
             for (int k = 1; k <= cfg.workers; ++k) {
+                int screened = read_counter_value(ROOT, "fast_count");
+                int busy_fast = count_busy_fast_slots(ROOT, cfg.workers);
+                if (screened + busy_fast >= cfg.steps) break;
+
                 fs::path gof = ROOT / "fast" / (".go_" + std::to_string(k));
                 if (fs::exists(gof)) continue;  // slot is busy
                 generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP);
@@ -763,11 +900,14 @@ int main(int argc, char** argv){
         }
     }
 
+    int fast_screened = read_counter_value(ROOT, "fast_count");
     log << "# Finished. MC steps = " << mc_steps
+        << ", fast screened = " << fast_screened
         << ", accepted = " << accept_count << "\n";
     log.close();
 
     std::cout << "MC finished: steps=" << mc_steps
+              << " fast_screened=" << fast_screened
               << " accepted=" << accept_count << "\n";
     return 0;
 }

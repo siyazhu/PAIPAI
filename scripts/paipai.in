@@ -10,6 +10,7 @@ FAST_WORKER="${BINDIR}/fast_worker.py"
 SLOW_WORKER="${BINDIR}/slow_worker.py"
 
 # Defaults
+START_DIR="$(pwd)"
 INPUT_STRUC="struc.in"
 MODEL="GRACE-2L-OMAT"
 DEVICE="cpu"
@@ -23,6 +24,8 @@ MC_STEPS=200000
 MC_TEMP=700
 POOL_CAP=128
 ROOT_DIR="$(pwd)"
+ROOT_EXPLICIT=0
+RESUME_STATE=""
 FMAX_SCREEN=0.10
 MAX_STEPS_SCREEN=30
 FMAX_REFINE=0.01
@@ -49,6 +52,7 @@ Basic options:
   --device DEV                  cpu | cuda (default: ${DEVICE})
   --ngpu N                      Number of GPUs for round-robin assignment (default: ${NGPU})
   --root DIR                    Root working directory (default: current directory)
+  --resume-state DIR            Resume finiteT from an existing state directory containing SAVE, CONTCAR, and energy
 
 Worker options:
   --fast N                      Number of fast workers (default: ${NUM_FAST})
@@ -60,7 +64,7 @@ Worker options:
   --max-steps-refine N          Slow-worker max refine steps (default: ${MAX_STEPS_REFINE})
 
 Monte Carlo options:
-  --steps N                     Monte Carlo steps (default: ${MC_STEPS})
+  --steps N                     Run budget: fast-screened structures in search, MC proposals in finiteT (default: ${MC_STEPS})
   --temp T                      Monte Carlo temperature (default: ${MC_TEMP})
   --p-swap-metal N              Weight for metal swap moves (default: ${P_SWAP_METAL})
   --p-swap-inter N              Weight for interstitial swap moves (default: ${P_SWAP_INTER})
@@ -84,7 +88,8 @@ while [[ $# -gt 0 ]]; do
         --model) MODEL="$2"; shift 2 ;;
         --device) DEVICE="$2"; shift 2 ;;
         --ngpu) NGPU="$2"; shift 2 ;;
-        --root) ROOT_DIR="$2"; shift 2 ;;
+        --root) ROOT_DIR="$2"; ROOT_EXPLICIT=1; shift 2 ;;
+        --resume-state) RESUME_STATE="$2"; shift 2 ;;
 
         --fast) NUM_FAST="$2"; shift 2 ;;
         --slow) NUM_SLOW="$2"; shift 2 ;;
@@ -109,6 +114,33 @@ while [[ $# -gt 0 ]]; do
         *) MC_EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
+
+if [[ -n "$RESUME_STATE" && "$MODE" != "finiteT" ]]; then
+    echo "[ERROR] --resume-state is only supported with --mode finiteT"
+    exit 1
+fi
+
+if [[ -n "$RESUME_STATE" && "$ROOT_EXPLICIT" -eq 0 ]]; then
+    ROOT_DIR="finiteT_${MC_TEMP}"
+fi
+
+abs_path() {
+    case "$1" in
+        /*|[A-Za-z]:/*|[A-Za-z]:\\*) printf "%s\n" "$1" ;;
+        *) printf "%s/%s\n" "$START_DIR" "$1" ;;
+    esac
+}
+
+ROOT_DIR="$(abs_path "$ROOT_DIR")"
+INPUT_STRUC="$(abs_path "$INPUT_STRUC")"
+if [[ -n "$RESUME_STATE" ]]; then
+    RESUME_STATE="$(abs_path "$RESUME_STATE")"
+fi
+
+MC_RESUME_ARGS=()
+if [[ -n "$RESUME_STATE" ]]; then
+    MC_RESUME_ARGS+=(--resume-state "$RESUME_STATE")
+fi
 
 if [[ "$DEVICE" == "cuda" && "$NGPU" -lt 1 ]]; then
     echo "[ERROR] --ngpu must be >= 1 when --device cuda"
@@ -147,6 +179,7 @@ trap cleanup EXIT INT TERM
 echo "[INFO] ROOT_DIR = $ROOT_DIR"
 echo "[INFO] INPUT_STRUC = $INPUT_STRUC"
 echo "[INFO] MODE = $MODE"
+echo "[INFO] RESUME_STATE = ${RESUME_STATE:-<none>}"
 echo "[INFO] NUM_FAST = $NUM_FAST, NUM_SLOW = $NUM_SLOW"
 echo "[INFO] MODEL = $MODEL, DEVICE = $DEVICE"
 echo "[INFO] NGPU = $NGPU"
@@ -228,18 +261,22 @@ for (( j=1; j<=NUM_SLOW; ++j )); do
 done
 
 echo "[INFO] Running C++ master..."
-"$MASTER" "$INPUT_STRUC" \
-    --mode "$MODE" \
-    --workers "$NUM_FAST" \
-    --steps "$MC_STEPS" \
-    --temp "$MC_TEMP" \
-    --p-swap-metal "$P_SWAP_METAL" \
-    --p-swap-inter "$P_SWAP_INTER" \
-    --p-cluster-inter "$P_CLUSTER_INTER" \
-    --p-exch-metal "$P_EXCH_METAL" \
-    --p-exch-inter "$P_EXCH_INTER" \
-    --intsite-neighbor-cutoff "$INTSITE_NEIGHBOR_CUTOFF" \
-    --interstitial-site-cutoff "$INTERSTITIAL_SITE_CUTOFF" \
-    "${MC_EXTRA_ARGS[@]}"
+(
+    cd "$ROOT_DIR"
+    "$MASTER" "$INPUT_STRUC" \
+        --mode "$MODE" \
+        --workers "$NUM_FAST" \
+        --steps "$MC_STEPS" \
+        --temp "$MC_TEMP" \
+        --p-swap-metal "$P_SWAP_METAL" \
+        --p-swap-inter "$P_SWAP_INTER" \
+        --p-cluster-inter "$P_CLUSTER_INTER" \
+        --p-exch-metal "$P_EXCH_METAL" \
+        --p-exch-inter "$P_EXCH_INTER" \
+        --intsite-neighbor-cutoff "$INTSITE_NEIGHBOR_CUTOFF" \
+        --interstitial-site-cutoff "$INTERSTITIAL_SITE_CUTOFF" \
+        "${MC_RESUME_ARGS[@]}" \
+        "${MC_EXTRA_ARGS[@]}"
+)
 
 echo "[INFO] C++ master finished."

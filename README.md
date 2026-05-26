@@ -353,7 +353,8 @@ for example GPU submission scripts.
 | `--mode MODE` | `search` or `finiteT` |
 | `--device DEV` | `cpu` or `cuda` |
 | `--model NAME` | MLIP model |
-| `--root DIR` | Working directory |
+| `--root DIR` | Working directory. If omitted for `finiteT --resume-state`, PAIPAI uses `finiteT_<temp>` |
+| `--resume-state DIR` | Start `finiteT` from an existing state directory containing `SAVE`, `CONTCAR`, and `energy` or `meta.json` |
 
 ---
 
@@ -372,7 +373,7 @@ for example GPU submission scripts.
 
 | Option | Description |
 |---|---|
-| `--steps N` | Number of Monte Carlo steps |
+| `--steps N` | Run budget. In `search`, this is the number of structures processed by fast screening (`counters/fast_count`). In `finiteT`, this is the number of processed MC proposals. |
 | `--temp T` | Monte Carlo temperature |
 | `--p-swap-metal N` | Weight for metal swap moves |
 | `--p-swap-inter N` | Weight for interstitial swap moves |
@@ -418,6 +419,8 @@ After slow relaxation, interstitial atoms are matched back to candidate sites us
 
 In `finiteT` mode, interstitial hopping during relaxation is rejected so that the Markov chain remains a well-defined site-occupation ensemble. In `search` mode, relaxed interstitial hopping is allowed; PAIPAI reassigns the occupation to the nearest valid site and rewrites the task `CONTCAR` so that its atom ordering remains consistent with the updated `SAVE`.
 
+The initial slow relaxation is used to establish the starting `SAVE`/`CONTCAR` state. If the calculator reaches `--max-steps-refine` and still returns a final structure and energy, PAIPAI accepts that returned geometry as the initial state and records the convergence metadata in the worker output.
+
 ---
 
 ## 2. New `search` and `finiteT` modes
@@ -435,6 +438,14 @@ PAIPAI v2.0 now supports two distinct workflows.
 - single slow-worker workflow
 - unbiased finite-temperature ensemble sampling
 - rejects trials where relaxation moves an interstitial atom to a different site
+
+`finiteT` can also resume from a state selected during `search`:
+
+```bash
+paipai --mode finiteT --resume-state search/mcprocess/000031 --temp 700
+```
+
+The resumed state uses `SAVE` as the reference occupation, `CONTCAR` as the relaxed coordinate seed, and `energy` as the current energy. If `--root` is omitted, the run directory defaults to `finiteT_<temp>`, such as `finiteT_700`.
 
 ---
 
