@@ -33,10 +33,12 @@ MAX_STEPS_REFINE=400
 
 P_SWAP_METAL=70
 P_SWAP_INTER=30
+P_HOP_INTER=0
 P_CLUSTER_INTER=0
 P_EXCH_METAL=0
 P_EXCH_INTER=0
 INTSITE_NEIGHBOR_CUTOFF=3.5
+INTSITE_HOP_CUTOFF=3.0
 INTERSTITIAL_SITE_CUTOFF=1.5
 
 MC_EXTRA_ARGS=()
@@ -68,10 +70,12 @@ Monte Carlo options:
   --temp T                      Monte Carlo temperature (default: ${MC_TEMP})
   --p-swap-metal N              Weight for metal swap moves (default: ${P_SWAP_METAL})
   --p-swap-inter N              Weight for interstitial swap moves (default: ${P_SWAP_INTER})
+  --p-hop-inter N               Weight for local interstitial hop moves (default: ${P_HOP_INTER})
   --p-cluster-inter N           Weight for cluster interstitial swap moves (default: ${P_CLUSTER_INTER})
   --p-exch-metal N              Weight for metal exchange moves (default: ${P_EXCH_METAL})
   --p-exch-inter N              Weight for interstitial exchange moves (default: ${P_EXCH_INTER})
   --intsite-neighbor-cutoff X   Cutoff for interstitial-metal neighbor map (default: ${INTSITE_NEIGHBOR_CUTOFF})
+  --intsite-hop-cutoff X        Cutoff for local interstitial hop graph (default: ${INTSITE_HOP_CUTOFF})
   --interstitial-site-cutoff X  Max relaxed interstitial distance to assigned site (default: ${INTERSTITIAL_SITE_CUTOFF})
 
 Other:
@@ -103,10 +107,12 @@ while [[ $# -gt 0 ]]; do
         --temp) MC_TEMP="$2"; shift 2 ;;
         --p-swap-metal) P_SWAP_METAL="$2"; shift 2 ;;
         --p-swap-inter) P_SWAP_INTER="$2"; shift 2 ;;
+        --p-hop-inter) P_HOP_INTER="$2"; shift 2 ;;
         --p-cluster-inter) P_CLUSTER_INTER="$2"; shift 2 ;;
         --p-exch-metal) P_EXCH_METAL="$2"; shift 2 ;;
         --p-exch-inter) P_EXCH_INTER="$2"; shift 2 ;;
         --intsite-neighbor-cutoff) INTSITE_NEIGHBOR_CUTOFF="$2"; shift 2 ;;
+        --intsite-hop-cutoff) INTSITE_HOP_CUTOFF="$2"; shift 2 ;;
         --interstitial-site-cutoff) INTERSTITIAL_SITE_CUTOFF="$2"; shift 2 ;;
 
         -h|--help) usage; exit 0 ;;
@@ -196,8 +202,9 @@ echo "[INFO] PYTHON = $PYTHON"
 echo "[INFO] MC_STEPS = $MC_STEPS, MC_TEMP = $MC_TEMP"
 echo "[INFO] POOL_CAP = $POOL_CAP"
 echo "[INFO] Relaxation: fmax_screen=$FMAX_SCREEN, max_steps_screen=$MAX_STEPS_SCREEN, fmax_refine=$FMAX_REFINE, max_steps_refine=$MAX_STEPS_REFINE"
-echo "[INFO] Move weights: swap_metal=$P_SWAP_METAL, swap_inter=$P_SWAP_INTER, cluster_inter=$P_CLUSTER_INTER, exch_metal=$P_EXCH_METAL, exch_inter=$P_EXCH_INTER"
+echo "[INFO] Move weights: swap_metal=$P_SWAP_METAL, swap_inter=$P_SWAP_INTER, hop_inter=$P_HOP_INTER, cluster_inter=$P_CLUSTER_INTER, exch_metal=$P_EXCH_METAL, exch_inter=$P_EXCH_INTER"
 echo "[INFO] INTSITE_NEIGHBOR_CUTOFF = $INTSITE_NEIGHBOR_CUTOFF"
+echo "[INFO] INTSITE_HOP_CUTOFF = $INTSITE_HOP_CUTOFF"
 echo "[INFO] INTERSTITIAL_SITE_CUTOFF = $INTERSTITIAL_SITE_CUTOFF"
 
 if [[ "$MODE" == "finiteT" ]]; then
@@ -279,10 +286,12 @@ echo "[INFO] Running C++ master..."
         --temp "$MC_TEMP" \
         --p-swap-metal "$P_SWAP_METAL" \
         --p-swap-inter "$P_SWAP_INTER" \
+        --p-hop-inter "$P_HOP_INTER" \
         --p-cluster-inter "$P_CLUSTER_INTER" \
         --p-exch-metal "$P_EXCH_METAL" \
         --p-exch-inter "$P_EXCH_INTER" \
         --intsite-neighbor-cutoff "$INTSITE_NEIGHBOR_CUTOFF" \
+        --intsite-hop-cutoff "$INTSITE_HOP_CUTOFF" \
         --interstitial-site-cutoff "$INTERSTITIAL_SITE_CUTOFF" \
         "${MC_RESUME_ARGS[@]}" \
         "${MC_EXTRA_ARGS[@]}"

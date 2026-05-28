@@ -377,8 +377,10 @@ for example GPU submission scripts.
 | `--temp T` | Monte Carlo temperature |
 | `--p-swap-metal N` | Weight for metal swap moves |
 | `--p-swap-inter N` | Weight for interstitial swap moves |
+| `--p-hop-inter N` | Weight for local interstitial hop moves between nearby interstitial sites |
 | `--p-cluster-inter N` | Weight for cluster interstitial swap moves |
 | `--intsite-neighbor-cutoff X` | Cutoff for interstitial-site neighbor mapping |
+| `--intsite-hop-cutoff X` | Cutoff for the local interstitial-hop neighbor graph |
 | `--interstitial-site-cutoff X` | Maximum distance for assigning a relaxed interstitial atom to a reference site |
 
 ---
@@ -405,6 +407,12 @@ For interstitial sites:
 
 ```text
 intsite_metal_neighbors.dat
+```
+
+Local interstitial hop proposals use a separate cached site-site neighbor graph:
+
+```text
+intsite_hop_neighbors.dat
 ```
 
 PAIPAI now separates the discrete reference state from the relaxed physical structure:
@@ -474,7 +482,26 @@ The default value is `0`, so existing runs are unchanged unless this move is exp
 
 ---
 
-## 4. `findinter` input builder
+## 4. Local interstitial hop move
+
+PAIPAI v2.0-dev also includes an optional local interstitial hop move for `finiteT` sampling:
+
+- neighboring interstitial-site pairs are cached in `intsite_hop_neighbors.dat`
+- a valid proposal swaps two nearby sites with different interstitial occupations
+- this supports multiple interstitial species, not only occupied-empty pairs
+- finiteT acceptance includes the Hastings factor from the number of valid forward and reverse local-hop edges
+
+This move is useful when global interstitial swaps mostly move atoms out of a low-energy region. Enable it with:
+
+```bash
+--p-hop-inter 80 --p-swap-inter 20 --intsite-hop-cutoff 3.0
+```
+
+The default `--p-hop-inter 0` preserves existing behavior.
+
+---
+
+## 5. `findinter` input builder
 
 PAIPAI v2.0-dev includes `findinter`, a standalone utility for constructing PAIPAI `struc.in` files from metal-only POSCAR files.
 

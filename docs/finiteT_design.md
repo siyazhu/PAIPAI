@@ -53,6 +53,27 @@ The current implementation swaps two different interstitial occupations and rand
 
 ---
 
+# Local Interstitial Hop Moves
+
+finiteT mode may also use local interstitial hop proposals:
+
+```bash
+--p-hop-inter N
+--intsite-hop-cutoff R
+```
+
+PAIPAI builds `intsite_hop_neighbors.dat` once at startup from the reference interstitial-site graph. A valid local hop edge is any neighboring site pair whose current occupations differ, including occupied-empty and different-species interstitial pairs.
+
+The proposal is chosen uniformly from all valid local hop edges in the current state. Because the number of valid edges can change after a hop, finiteT acceptance includes the Hastings factor:
+
+```text
+accept = min(1, exp(-(E_new - E_old) / kT) * N_forward / N_reverse)
+```
+
+The forward/reverse edge counts and Hastings ratio are stored in each task `meta.json` and echoed in `mc.log`.
+
+---
+
 # Initial Structure
 
 Recommended workflow:

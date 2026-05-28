@@ -166,10 +166,12 @@ Mode-dependent behavior:
 Neighbor maps:
 - Built once initially
 - Stored in intsite_metal_neighbors.dat
+- Local interstitial-hop site graph is stored in intsite_hop_neighbors.dat
 
 Purpose:
 - Track local cage deformation
 - Move empty sites consistently
+- Propose nearby interstitial hops without recomputing site-site distances every MC step
 
 ---
 

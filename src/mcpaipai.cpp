@@ -28,10 +28,12 @@ struct Args {
     double temp    = 0.001;      // Metropolis temperature factor
     int p_swap_metal  = 70;
     int p_swap_inter  = 30;
+    int p_hop_inter = 0;
     int p_cluster_inter = 0;
     int p_exch_metal  = 0;
     int p_exch_inter  = 0;
     double intsite_neighbor_cutoff = 3.5;  // cutoff for interstitial-site metal-neighbor map (Angstrom)
+    double intsite_hop_cutoff = 3.0;       // cutoff for interstitial-site local hop graph (Angstrom)
     std::string mode = "search";          // "search" = fast+slow pool; "finiteT" = one direct slow task at a time
     double interstitial_site_cutoff = 1.5; // max relaxed interstitial distance to assigned site (Angstrom)
     std::string resume_state_dir;          // existing SAVE/CONTCAR/energy seed for finiteT
@@ -41,9 +43,9 @@ void print_help(const char* prog){
     std::cout << "Usage: " << prog << " [INPUT_STRUCTURE] "
               << "[--workers N] [--steps K] [--temp T] "
               << "[--p-swap-metal P] [--p-swap-inter P] "
-              << "[--p-cluster-inter P] "
+              << "[--p-hop-inter P] [--p-cluster-inter P] "
               << "[--p-exch-metal P] [--p-exch-inter P] "
-              << "[--intsite-neighbor-cutoff R] "
+              << "[--intsite-neighbor-cutoff R] [--intsite-hop-cutoff R] "
               << "[--mode search|finiteT] [--finiteT] "
               << "[--interstitial-site-cutoff R] "
               << "[--resume-state DIR]\n";
@@ -64,17 +66,19 @@ Args parse_args(int argc, char** argv){
         else if (s=="--temp"){ need("--temp"); a.temp=std::stod(argv[++i]); }
         else if (s=="--p-swap-metal"){ need("--p-swap-metal"); a.p_swap_metal=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-swap-inter"){ need("--p-swap-inter"); a.p_swap_inter=std::max(0, std::stoi(argv[++i])); }
+        else if (s=="--p-hop-inter"){ need("--p-hop-inter"); a.p_hop_inter=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-cluster-inter"){ need("--p-cluster-inter"); a.p_cluster_inter=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-exch-metal"){ need("--p-exch-metal"); a.p_exch_metal=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--p-exch-inter"){ need("--p-exch-inter"); a.p_exch_inter=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--intsite-neighbor-cutoff"){ need("--intsite-neighbor-cutoff"); a.intsite_neighbor_cutoff=std::stod(argv[++i]); }
+        else if (s=="--intsite-hop-cutoff"){ need("--intsite-hop-cutoff"); a.intsite_hop_cutoff=std::stod(argv[++i]); }
         else if (s=="--mode"){ need("--mode"); a.mode=argv[++i]; }
         else if (s=="--finiteT"){ a.mode="finiteT"; }
         else if (s=="--interstitial-site-cutoff"){ need("--interstitial-site-cutoff"); a.interstitial_site_cutoff=std::stod(argv[++i]); }
         else if (s=="--resume-state"){ need("--resume-state"); a.resume_state_dir=argv[++i]; }
         else { std::cerr<<"Unknown arg: "<<s<<"\n"; print_help(argv[0]); std::exit(2); }
     }
-    int sum = a.p_swap_metal + a.p_swap_inter + a.p_cluster_inter +
+    int sum = a.p_swap_metal + a.p_swap_inter + a.p_hop_inter + a.p_cluster_inter +
               a.p_exch_metal + a.p_exch_inter;
     if (sum <= 0){
         std::cerr << "MC move probabilities are incorrect. Please check input parameters.\n";
@@ -87,6 +91,10 @@ Args parse_args(int argc, char** argv){
     }
     if (a.interstitial_site_cutoff <= 0.0) {
         std::cerr << "--interstitial-site-cutoff must be positive.\n";
+        std::exit(2);
+    }
+    if (a.intsite_hop_cutoff <= 0.0) {
+        std::cerr << "--intsite-hop-cutoff must be positive.\n";
         std::exit(2);
     }
     if (!a.resume_state_dir.empty() && a.mode != "finiteT") {
@@ -395,10 +403,13 @@ Structure make_relaxed_seed_for_trial(const fs::path& root,
 
 // Metropolis acceptance
 bool Accept(double Eold, double Enew, double temp,
-            std::mt19937_64& rng)
+            std::mt19937_64& rng,
+            double hastings_ratio = 1.0)
 {
-    if (Enew <= Eold) return true;
-    double p = std::exp(-(Enew - Eold)/(temp * k_Boltzmann));
+    if (hastings_ratio <= 0.0) return false;
+    double logp = -(Enew - Eold)/(temp * k_Boltzmann) + std::log(hastings_ratio);
+    if (logp >= 0.0) return true;
+    double p = std::exp(logp);
     std::uniform_real_distribution<double> dist(0.0, 1.0);
     double u = dist(rng);
     return (u < p);
@@ -408,6 +419,9 @@ struct MoveRecord {
     std::string type = "none";
     int a = -1;
     int b = -1;
+    int forward_choices = 0;
+    int reverse_choices = 0;
+    double hastings_ratio = 1.0;
 };
 
 // Apply one MC proposal move to a Structure.  This is shared by the original
@@ -420,8 +434,9 @@ MoveRecord apply_random_mc_move(Structure& struc,
     MoveRecord rec;
     const int P1 = cfg.p_swap_metal;
     const int P2 = cfg.p_swap_inter;
-    const int P3 = cfg.p_cluster_inter;
-    const int P4 = cfg.p_exch_metal;
+    const int P3 = cfg.p_hop_inter;
+    const int P4 = cfg.p_cluster_inter;
+    const int P5 = cfg.p_exch_metal;
 
     int r = std::rand() % SUMP;
     if (r < P1) {
@@ -446,6 +461,19 @@ MoveRecord apply_random_mc_move(Structure& struc,
         struc.swapInterstitial(a,b);
         rec = {"swap_interstitial", a, b};
     } else if ((r -= P2) < P3) {
+        fs::path hop_path = root / "intsite_hop_neighbors.dat";
+        if (!struc.readIntsiteHopNeighborMap(hop_path.string().c_str())) {
+            std::cerr << "[WARN] local interstitial hop skipped because hop neighbor map could not be read.\n";
+            return rec;
+        }
+        int a = -1, b = -1, forward = 0, reverse = 0;
+        int ret = struc.localHopInterstitialRandom(a, b, forward, reverse);
+        if (ret != 1 || forward <= 0 || reverse <= 0) {
+            std::cerr << "[WARN] local interstitial hop skipped because no valid hop edge was available.\n";
+            return rec;
+        }
+        rec = {"hop_interstitial", a, b, forward, reverse, (double)forward / (double)reverse};
+    } else if ((r -= P3) < P4) {
         // clusterInterstitialSwap: move an interstitial occupation and shuffle
         // the metal atom types in the union of the two neighboring cages.
         fs::path neigh_path = root / "intsite_metal_neighbors.dat";
@@ -461,7 +489,7 @@ MoveRecord apply_random_mc_move(Structure& struc,
             b = std::rand() % struc.num_interstitial;
         struc.clusterSwapInterstitial(a,b);
         rec = {"cluster_swap_interstitial", a, b};
-    } else if ((r -= P3) < P4) {
+    } else if ((r -= P4) < P5) {
         // TODO: exchangeMetal
         // struc.exchangeMetal(...);
     } else {
@@ -483,7 +511,10 @@ void generate_candidate_for_slot(int slot,
     Structure current_ref = struc;
 
     // 2) Random MC move.
-    apply_random_mc_move(struc, cfg, root, SUMP);
+    MoveRecord move = apply_random_mc_move(struc, cfg, root, SUMP);
+    if (move.type == "none") {
+        return;
+    }
     Structure trial_init = make_relaxed_seed_for_trial(root, current_ref, struc);
 
     // 3) Dump candidate directly into fast/POSCARk, fast/SAVEk
@@ -568,7 +599,11 @@ std::string submit_finiteT_trial_task(const fs::path& root,
     }
     Structure current_ref = struc;
 
-    apply_random_mc_move(struc, cfg, root, SUMP);
+    MoveRecord move = apply_random_mc_move(struc, cfg, root, SUMP);
+    if (move.type == "none") {
+        std::cerr << "[finiteT] no valid MC move was available for trial submission.\n";
+        return "";
+    }
     Structure trial_init = make_relaxed_seed_for_trial(root, current_ref, struc);
 
     fs::path pool = root / "waiting_pool";
@@ -591,6 +626,12 @@ std::string submit_finiteT_trial_task(const fs::path& root,
     meta["source"] = "finiteT_direct";
     meta["mode"] = "finiteT";
     meta["mc_step_proposal"] = next_step;
+    meta["move_type"] = move.type;
+    meta["move_site_a"] = move.a;
+    meta["move_site_b"] = move.b;
+    meta["move_forward_choices"] = move.forward_choices;
+    meta["move_reverse_choices"] = move.reverse_choices;
+    meta["hastings_ratio"] = move.hastings_ratio;
     // There is only one pending finiteT task, so this is not used for screening.
     meta["energy_screen"] = 0.0;
     meta["stamp"] = "created_by_cpp_master";
@@ -669,6 +710,7 @@ bool process_report_file(const fs::path& root,
     fs::path contcar_path = out_dir / "CONTCAR";
     fs::path save_path = out_dir / "SAVE";
     fs::path neigh_path = root / "intsite_metal_neighbors.dat";
+    fs::path meta_path = out_dir / "meta.json";
 
     if (!have_state) {
         // First-ever refined structure: treat as initial state.
@@ -747,11 +789,26 @@ bool process_report_file(const fs::path& root,
 
     // Normal MC proposal
     ++mc_steps;
-    bool accept = Accept(current_E, E_final, temp, rng);
+    double hastings_ratio = 1.0;
+    std::string move_type = "<unknown>";
+    try {
+        std::ifstream meta_ifs(meta_path);
+        if (meta_ifs) {
+            json meta;
+            meta_ifs >> meta;
+            hastings_ratio = meta.value("hastings_ratio", 1.0);
+            move_type = meta.value("move_type", move_type);
+        }
+    } catch (...) {
+        hastings_ratio = 1.0;
+    }
+    bool accept = Accept(current_E, E_final, temp, rng, hastings_ratio);
     log << "STEP " << mc_steps
         << " proposal task_id=" << task_id
+        << " move=" << move_type
         << " E_new=" << std::setprecision(12) << E_final
         << " E_old=" << current_E
+        << " hastings_ratio=" << hastings_ratio
         << " -> "   << (accept ? "ACCEPT" : "REJECT")
         << "\n";
     log.flush();
@@ -823,6 +880,7 @@ int main(int argc, char** argv){
 
     Args cfg = parse_args(argc, argv);
     const int SUMP = cfg.p_swap_metal + cfg.p_swap_inter +
+                     cfg.p_hop_inter +
                      cfg.p_cluster_inter +
                      cfg.p_exch_metal + cfg.p_exch_inter;
 
@@ -855,6 +913,8 @@ int main(int argc, char** argv){
     }
     struc.buildIntsiteMetalNeighborMap(cfg.intsite_neighbor_cutoff);
     struc.outputIntsiteMetalNeighborMap("intsite_metal_neighbors.dat");
+    struc.buildIntsiteHopNeighborMap(cfg.intsite_hop_cutoff);
+    struc.outputIntsiteHopNeighborMap("intsite_hop_neighbors.dat");
     struc.outputsave("SAVE");
 
     std::ofstream log("mc.log");
@@ -865,10 +925,12 @@ int main(int argc, char** argv){
         << " temp=" << cfg.temp
         << " p_swap_metal=" << cfg.p_swap_metal
         << " p_swap_inter=" << cfg.p_swap_inter
+        << " p_hop_inter=" << cfg.p_hop_inter
         << " p_cluster_inter=" << cfg.p_cluster_inter
         << " p_exch_metal=" << cfg.p_exch_metal
         << " p_exch_inter=" << cfg.p_exch_inter
         << " intsite_neighbor_cutoff=" << cfg.intsite_neighbor_cutoff
+        << " intsite_hop_cutoff=" << cfg.intsite_hop_cutoff
         << " interstitial_site_cutoff=" << cfg.interstitial_site_cutoff
         << " resume_state=" << (cfg.resume_state_dir.empty() ? "<none>" : cfg.resume_state_dir)
         << "\n";

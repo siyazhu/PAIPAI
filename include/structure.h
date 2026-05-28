@@ -20,6 +20,7 @@ class Structure{
 		vector<vector<Real>> interstitial_pos;
 		vector<vector<Real>> pos;
 		vector<vector<int>> intsite_metal_neighbors;
+		vector<vector<int>> intsite_hop_neighbors;
 		Real cell_x1, cell_x2, cell_x3, cell_y1, cell_y2, cell_y3, cell_z1, cell_z2, cell_z3;
 
 		Structure();
@@ -31,6 +32,11 @@ class Structure{
 		void buildIntsiteMetalNeighborMap(Real cutoff);
 		void outputIntsiteMetalNeighborMap(const char* filename);
 		int readIntsiteMetalNeighborMap(const char* filename);
+		void buildIntsiteHopNeighborMap(Real cutoff);
+		void outputIntsiteHopNeighborMap(const char* filename);
+		int readIntsiteHopNeighborMap(const char* filename);
+		int countInterstitialHopEdges() const;
+		int localHopInterstitialRandom(int& a, int& b, int& forward_choices, int& reverse_choices);
 		int updateCoordinatesFromContcar(const char* contcar_filename,
 							 const char* intsite_neighbor_filename);
 		int seedTrialCoordinatesFromContcar(const Structure& current_ref,

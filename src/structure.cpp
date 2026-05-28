@@ -215,6 +215,7 @@ Structure::Structure(){
 	vector<int>().swap(interstitial_postype);	// the type of each interstitial site occupation. -1 for not occupied, 0 to num_interstitial_elements-1 for the occupation of the corresponding type
 	vector<int>().swap(num_interstitial_atoms);	//number of atoms of each interstitial species
 	vector<vector<int>>().swap(intsite_metal_neighbors);
+	vector<vector<int>>().swap(intsite_hop_neighbors);
 }
 
 
@@ -241,6 +242,7 @@ int Structure::readstruc(const char* filename){
         vector<int>().swap(interstitial_postype);      // occupation of each interstitial site: -1 empty, 0..num_interstitial_elements-1 occupied
         vector<int>().swap(num_interstitial_atoms);    // number of atoms of each interstitial species
         vector<vector<int>>().swap(intsite_metal_neighbors);
+        vector<vector<int>>().swap(intsite_hop_neighbors);
 
 	inputfile >> scalingfactor; 
 	
@@ -689,6 +691,126 @@ int Structure::readIntsiteMetalNeighborMap(const char* filename){
         }
         inputfile.close();
         return 1;
+}
+
+void Structure::buildIntsiteHopNeighborMap(Real cutoff){
+        intsite_hop_neighbors.clear();
+        intsite_hop_neighbors.resize(num_interstitial);
+
+        vector<Real> a = make_vec3(cell_x1, cell_y1, cell_z1);
+        vector<Real> b = make_vec3(cell_x2, cell_y2, cell_z2);
+        vector<Real> c = make_vec3(cell_x3, cell_y3, cell_z3);
+        Real inv[3][3];
+        bool has_inv = inverse3x3_columns(a, b, c, inv);
+        if (!has_inv){
+                cerr << "Warning: cell matrix is singular; hop neighbor map will use direct Cartesian distances without PBC." << endl;
+        }
+
+        Real cutoff2 = cutoff * cutoff;
+        for (int i = 0; i < num_interstitial; i++){
+                for (int j = i + 1; j < num_interstitial; j++){
+                        vector<Real> d = make_vec3(interstitial_pos[j][0] - interstitial_pos[i][0],
+                                                   interstitial_pos[j][1] - interstitial_pos[i][1],
+                                                   interstitial_pos[j][2] - interstitial_pos[i][2]);
+                        if (has_inv) d = minimum_image_delta(d, a, b, c, inv);
+                        Real d2 = dot3(d,d);
+                        if (d2 <= cutoff2){
+                                intsite_hop_neighbors[i].push_back(j);
+                                intsite_hop_neighbors[j].push_back(i);
+                        }
+                }
+        }
+
+        int min_n = num_interstitial + 1;
+        int max_n = 0;
+        int empty_n = 0;
+        Real avg_n = 0.0;
+        for (int s = 0; s < num_interstitial; s++){
+                int n = (int)intsite_hop_neighbors[s].size();
+                min_n = min(min_n, n);
+                max_n = max(max_n, n);
+                if (n == 0) empty_n++;
+                avg_n += n;
+        }
+        if (num_interstitial > 0) avg_n /= (Real)num_interstitial;
+        cout << "Built intsite-hop neighbor map with cutoff = " << cutoff << endl;
+        cout << "Hop neighbor count: min = " << min_n
+             << ", max = " << max_n
+             << ", avg = " << avg_n
+             << ", empty sites = " << empty_n << endl;
+}
+
+void Structure::outputIntsiteHopNeighborMap(const char* filename){
+        ofstream outputfile(filename);
+        if (!outputfile){
+                cerr << "Cannot write intsite-hop neighbor map: " << filename << endl;
+                return;
+        }
+        outputfile << "# intsite_id n_neighbors intsite_neighbor_ids...\n";
+        for (int s = 0; s < (int)intsite_hop_neighbors.size(); s++){
+                outputfile << s << " " << intsite_hop_neighbors[s].size();
+                for (int j = 0; j < (int)intsite_hop_neighbors[s].size(); j++){
+                        outputfile << " " << intsite_hop_neighbors[s][j];
+                }
+                outputfile << "\n";
+        }
+        outputfile.close();
+}
+
+int Structure::readIntsiteHopNeighborMap(const char* filename){
+        ifstream inputfile(filename);
+        if (!inputfile){
+                cerr << "Cannot read intsite-hop neighbor map: " << filename << endl;
+                return 0;
+        }
+        intsite_hop_neighbors.clear();
+        intsite_hop_neighbors.resize(num_interstitial);
+
+        string line;
+        while (getline(inputfile, line)){
+                if (line.size() == 0) continue;
+                if (line[0] == '#') continue;
+                stringstream ss(line);
+                int site_id, n_neighbors;
+                if (!(ss >> site_id >> n_neighbors)) continue;
+                if (site_id < 0 || site_id >= num_interstitial){
+                        cerr << "Invalid intsite id in hop neighbor map: " << site_id << endl;
+                        inputfile.close();
+                        return 0;
+                }
+                intsite_hop_neighbors[site_id].clear();
+                for (int k = 0; k < n_neighbors; k++){
+                        int neigh_id;
+                        if (!(ss >> neigh_id)){
+                                cerr << "Missing neighbor id in hop neighbor map for intsite " << site_id << endl;
+                                inputfile.close();
+                                return 0;
+                        }
+                        if (neigh_id < 0 || neigh_id >= num_interstitial){
+                                cerr << "Invalid neighbor id in hop neighbor map: " << neigh_id << endl;
+                                inputfile.close();
+                                return 0;
+                        }
+                        intsite_hop_neighbors[site_id].push_back(neigh_id);
+                }
+        }
+        inputfile.close();
+        return 1;
+}
+
+int Structure::countInterstitialHopEdges() const{
+        if ((int)intsite_hop_neighbors.size() != num_interstitial) return 0;
+        int count = 0;
+        for (int i = 0; i < num_interstitial; i++){
+                for (int j : intsite_hop_neighbors[i]){
+                        if (j <= i) continue;
+                        if (j < 0 || j >= num_interstitial) continue;
+                        if (interstitial_postype[i] != interstitial_postype[j]){
+                                count++;
+                        }
+                }
+        }
+        return count;
 }
 
 int Structure::updateCoordinatesFromContcar(const char* contcar_filename, const char* intsite_neighbor_filename){
@@ -1483,6 +1605,43 @@ int Structure::clusterSwapInterstitial(int a, int b){
         }
 
         return(1);
+}
+
+int Structure::localHopInterstitialRandom(int& a, int& b, int& forward_choices, int& reverse_choices){
+        a = -1;
+        b = -1;
+        forward_choices = countInterstitialHopEdges();
+        reverse_choices = 0;
+
+        if (forward_choices <= 0){
+                cout << "No available local interstitial hop edge\n";
+                return(0);
+        }
+
+        int target = rand() % forward_choices;
+        int seen = 0;
+        for (int i = 0; i < num_interstitial; i++){
+                for (int j : intsite_hop_neighbors[i]){
+                        if (j <= i) continue;
+                        if (j < 0 || j >= num_interstitial) continue;
+                        if (interstitial_postype[i] == interstitial_postype[j]) continue;
+                        if (seen == target){
+                                a = i;
+                                b = j;
+                                int ret = swapInterstitial(a, b);
+                                if (ret != 1) return ret;
+                                reverse_choices = countInterstitialHopEdges();
+                                if (reverse_choices <= 0){
+                                        cout << "No reverse local interstitial hop edge after trial\n";
+                                        return(0);
+                                }
+                                return(1);
+                        }
+                        seen++;
+                }
+        }
+
+        return(0);
 }
 
 int Structure::exchangeInterstitial(int a, int type){
