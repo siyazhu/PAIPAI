@@ -169,6 +169,7 @@ def main():
     # handshake files with C++ master
     poscar = FAST / f"POSCAR{k}"
     savef  = FAST / f"SAVE{k}"
+    metaf  = FAST / f"META{k}"
     gof    = FAST / f".go_{k}"
     donef  = FAST / f".done_{k}"
 
@@ -205,6 +206,13 @@ def main():
             if struct is None:
                 raise RuntimeError("failed to read POSCAR")
 
+            meta_in = {}
+            if metaf.exists():
+                try:
+                    meta_in = json.loads(metaf.read_text())
+                except Exception:
+                    meta_in = {}
+
             # run coarse relaxation
             t0 = time.time()
             calc.fmax = args.fmax_screen
@@ -231,6 +239,7 @@ def main():
                 if savef.exists():
                     atomic_copy(savef, tmpd / "SAVE")
                 meta = {
+                    **meta_in,
                     "task_id": task_id,
                     "source_slot": k,
                     "energy_screen": E_screen,
@@ -249,6 +258,10 @@ def main():
             # tell C++ "this slot is free again"
             try:
                 gof.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                metaf.unlink()
             except FileNotFoundError:
                 pass
             donef.touch()

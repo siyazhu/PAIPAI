@@ -523,9 +523,25 @@ void generate_candidate_for_slot(int slot,
 
     fs::path pos = fast_dir / ("POSCAR" + std::to_string(slot));
     fs::path sav = fast_dir / ("SAVE"   + std::to_string(slot));
+    fs::path met = fast_dir / ("META"   + std::to_string(slot));
 
     trial_init.outputvasp(pos.string().c_str());
     struc.outputsave(sav.string().c_str());
+    json meta;
+    meta["source"] = "search_fast_screen";
+    meta["mode"] = "search";
+    meta["source_slot"] = slot;
+    meta["move_type"] = move.type;
+    meta["move_site_a"] = move.a;
+    meta["move_site_b"] = move.b;
+    meta["move_forward_choices"] = move.forward_choices;
+    meta["move_reverse_choices"] = move.reverse_choices;
+    meta["hastings_ratio"] = move.hastings_ratio;
+    meta["stamp"] = "created_by_cpp_master";
+    {
+        std::ofstream ofs(met);
+        ofs << std::setw(2) << meta << "\n";
+    }
 
     // 4) Trigger fast worker by touching .go_k
     fs::path gof = fast_dir / (".go_" + std::to_string(slot));
