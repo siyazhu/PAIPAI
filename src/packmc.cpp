@@ -15,10 +15,24 @@ using namespace paipai_analysis;
 
 static void usage()
 {
-    std::cerr << "Usage: packmc MCPROCESS "
+    std::cerr << "Usage: packmc "
+                 "[--root RUN_ROOT] "
                  "[--output mcprocess_summary.tsv] "
                  "[--contcar-dir mcprocess_CONTCARs] "
                  "[--tar mcprocess_CONTCARs.tar]\n";
+}
+
+static bool report_progress(size_t i, size_t total)
+{
+    return i == 1 || i == total || i % 100 == 0;
+}
+
+static void progress(const std::string& stage, size_t i, size_t total, const fs::path& item = {})
+{
+    if (!report_progress(i, total)) return;
+    std::cout << "[" << stage << "] " << i << "/" << total;
+    if (!item.empty()) std::cout << " " << item;
+    std::cout << "\n";
 }
 
 static std::string trial_mode(const json& meta)
@@ -81,7 +95,9 @@ static void write_tar(const fs::path& dir, const fs::path& tar_path)
     std::sort(files.begin(), files.end());
 
     std::array<char, 8192> buf{};
-    for (const auto& file : files) {
+    for (size_t fi = 0; fi < files.size(); ++fi) {
+        const auto& file = files[fi];
+        progress("write tar", fi + 1, files.size(), file.filename());
         uint64_t size = (uint64_t)fs::file_size(file);
         write_tar_header(out, root_name + "/" + file.filename().string(), size, '0');
         std::ifstream in(file, std::ios::binary);
@@ -104,19 +120,15 @@ static void write_tar(const fs::path& dir, const fs::path& tar_path)
 
 int main(int argc, char** argv)
 {
-    if (argc < 2) {
-        usage();
-        return 2;
-    }
-
-    fs::path mcprocess = argv[1];
+    fs::path root = ".";
     fs::path output = "mcprocess_summary.tsv";
     fs::path contcar_dir = "mcprocess_CONTCARs";
     fs::path tar_path = "mcprocess_CONTCARs.tar";
 
-    for (int i = 2; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--output" && i + 1 < argc) output = argv[++i];
+        if (a == "--root" && i + 1 < argc) root = argv[++i];
+        else if (a == "--output" && i + 1 < argc) output = argv[++i];
         else if (a == "--contcar-dir" && i + 1 < argc) contcar_dir = argv[++i];
         else if (a == "--tar" && i + 1 < argc) tar_path = argv[++i];
         else if (a == "-h" || a == "--help") { usage(); return 0; }
@@ -128,8 +140,16 @@ int main(int argc, char** argv)
     }
 
     try {
-        mcprocess = fs::absolute(mcprocess);
-        fs::path base = mcprocess.parent_path();
+        root = fs::absolute(root);
+        fs::path mcprocess = root / "mcprocess";
+        fs::path base = root;
+        if (!fs::exists(mcprocess) && fs::is_directory(root)) {
+            auto direct_states = numbered_state_dirs(root);
+            if (!direct_states.empty()) {
+                mcprocess = root;
+                base = root.parent_path();
+            }
+        }
         if (!output.is_absolute()) output = base / output;
         if (!contcar_dir.is_absolute()) contcar_dir = base / contcar_dir;
         if (!tar_path.is_absolute()) tar_path = base / tar_path;
@@ -139,16 +159,23 @@ int main(int argc, char** argv)
 
         if (fs::exists(contcar_dir)) fs::remove_all(contcar_dir);
         fs::create_directories(contcar_dir);
-        for (const auto& state : states) {
+        std::cout << "[collect CONTCAR] collecting " << states.size() << " states\n";
+        for (size_t si = 0; si < states.size(); ++si) {
+            const auto& state = states[si];
+            progress("collect CONTCAR", si + 1, states.size(), state.filename());
             fs::path src = state / "CONTCAR";
             if (fs::exists(src)) fs::copy_file(src, contcar_dir / ("CONTCAR" + state.filename().string()), fs::copy_options::overwrite_existing);
         }
+        std::cout << "[write tar] packing CONTCAR files\n";
         write_tar(contcar_dir, tar_path);
 
         std::vector<std::string> columns;
         std::set<std::string> seen;
         std::map<std::string, std::map<std::string, std::string>> values_by_state;
-        for (const auto& state : states) {
+        std::cout << "[scan stats] reading struc_* files\n";
+        for (size_t si = 0; si < states.size(); ++si) {
+            const auto& state = states[si];
+            progress("scan stats", si + 1, states.size(), state.filename());
             std::map<std::string, std::string> vals;
             std::vector<fs::path> stat_files;
             for (auto& e : fs::directory_iterator(state)) {
@@ -176,7 +203,10 @@ int main(int argc, char** argv)
         for (const auto& c : columns) table << "\t" << c;
         table << "\n";
 
-        for (const auto& state : states) {
+        std::cout << "[write summary] writing TSV rows\n";
+        for (size_t si = 0; si < states.size(); ++si) {
+            const auto& state = states[si];
+            progress("write summary", si + 1, states.size(), state.filename());
             json meta = read_meta(state);
             std::string name = state.filename().string();
             table << name << "\t" << read_energy(state, meta) << "\t" << trial_mode(meta);

@@ -557,7 +557,7 @@ The metal-metal form uses the same convention for metal neighbors around a chose
 To package all accepted structures and build a summary table:
 
 ```bash
-packmc mcprocess
+packmc
 ```
 
 This creates:
@@ -565,6 +565,8 @@ This creates:
 - `mcprocess_CONTCARs/`, containing `CONTCAR000001`, `CONTCAR000002`, ...
 - `mcprocess_CONTCARs.tar`
 - `mcprocess_summary.tsv`
+
+By default, `packmc` looks for `mcprocess/` under the current directory. Use `--root RUN_ROOT` if you want to run it from elsewhere. While running, it prints progress for the main stages: collecting `CONTCAR` files, writing the tar archive, scanning `struc_*` files, and writing the summary table.
 
 The summary table columns are:
 
