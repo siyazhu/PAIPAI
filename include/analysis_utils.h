@@ -32,6 +32,7 @@ struct SaveData {
     std::vector<std::string> interstitial_species;
     std::vector<int> interstitial_counts;
     int num_interstitial_sites = 0;
+    std::vector<Vec3> metal_pos;
     std::vector<int> metal_types;
     std::vector<Vec3> interstitial_pos;
     std::vector<int> interstitial_site_types;
@@ -196,9 +197,13 @@ inline SaveData read_save(const fs::path& path)
     }
 
     s.metal_types.reserve(num_metal);
+    s.metal_pos.reserve(num_metal);
     for (int m = 0; m < num_metal; ++m) {
         auto toks = split(lines.at(i++));
         if (toks.size() < 4) throw std::runtime_error("metal coordinate line missing type");
+        Vec3 r{std::stod(toks[0]), std::stod(toks[1]), std::stod(toks[2])};
+        if (!cartesian) r = matvec(r[0], r[1], r[2], s.cell);
+        s.metal_pos.push_back(r);
         s.metal_types.push_back(std::stoi(toks[3]));
     }
 

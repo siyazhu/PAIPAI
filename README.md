@@ -520,20 +520,26 @@ This is intended as a practical input-building tool for bulk, defect, grain-boun
 
 PAIPAI v2.0-dev includes small command-line tools for post-processing accepted MC states.
 
-To compute Warren-Cowley parameters for one accepted state:
+To compute Warren-Cowley parameters for all accepted states in the current run directory:
 
 ```bash
-warrencowley mcprocess/000031 --inter-metal-cutoff 2.5
+warrencowley --inter-metal-cutoff 2.5
+```
+
+By default, neighbor distances are computed from the relaxed `CONTCAR` atom coordinates. To compute the same statistics on the saved reference lattice and occupation instead, use:
+
+```bash
+warrencowley -ref --inter-metal-cutoff 2.5
 ```
 
 You can also compute metal-metal Warren-Cowley parameters, or request both in one run:
 
 ```bash
-warrencowley mcprocess/000031 --metal-metal-cutoff 3.0
-warrencowley mcprocess/000031 --inter-metal-cutoff 2.5 --metal-metal-cutoff 3.0
+warrencowley --metal-metal-cutoff 3.0
+warrencowley --inter-metal-cutoff 2.5 --metal-metal-cutoff 3.0
 ```
 
-At least one cutoff must be provided. This writes `mcprocess/000031/struc_WC`. Each line has two tab-separated fields:
+At least one cutoff must be provided. By default, `warrencowley` looks for `mcprocess/` under the current directory and writes one `struc_WC` file into each numbered state directory, such as `mcprocess/000031/struc_WC`. Each line has two tab-separated fields:
 
 ```text
 WC_B_Nb    value

@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -12,7 +13,9 @@ using namespace paipai_analysis;
 
 static void usage()
 {
-    std::cerr << "Usage: warrencowley STATE_DIR "
+    std::cerr << "Usage: warrencowley "
+                 "[--root RUN_ROOT] "
+                 "[-ref] "
                  "[--inter-metal-cutoff R] [--metal-metal-cutoff R] "
                  "[--output struc_WC]\n";
 }
@@ -37,10 +40,44 @@ static std::string format_wc(double value)
     return ss.str();
 }
 
+static void use_contcar_interstitial_positions(SaveData& save, const PoscarData& contcar)
+{
+    std::map<std::string, int> offsets;
+    int start = 0;
+    for (size_t i = 0; i < contcar.species.size(); ++i) {
+        offsets[contcar.species[i]] = start;
+        start += contcar.counts[i];
+    }
+
+    std::vector<Vec3> pos;
+    std::vector<int> types;
+    for (int it = 0; it < (int)save.interstitial_species.size(); ++it) {
+        const std::string& sp = save.interstitial_species[it];
+        if (!offsets.count(sp)) continue;
+        int sp_index = -1;
+        for (int k = 0; k < (int)contcar.species.size(); ++k) {
+            if (contcar.species[k] == sp) {
+                sp_index = k;
+                break;
+            }
+        }
+        if (sp_index < 0) continue;
+        int begin = offsets[sp];
+        int count = contcar.counts[sp_index];
+        for (int n = 0; n < count; ++n) {
+            pos.push_back(contcar.coords[begin + n]);
+            types.push_back(it);
+        }
+    }
+    save.interstitial_pos = pos;
+    save.interstitial_site_types = types;
+    save.num_interstitial_sites = (int)pos.size();
+}
+
 static std::vector<std::pair<std::string, std::string>>
 compute_inter_metal_wc(const SaveData& save,
-                       const PoscarData& contcar,
                        const std::vector<Vec3>& metal_coords,
+                       const std::array<Vec3, 3>& cell,
                        const std::array<Vec3, 3>& inv,
                        double cutoff)
 {
@@ -57,7 +94,7 @@ compute_inter_metal_wc(const SaveData& save,
         int total_neighbors = 0;
         for (int s : sites) {
             for (int m = 0; m < (int)metal_coords.size(); ++m) {
-                double d = minimum_image_distance(save.interstitial_pos[s], metal_coords[m], contcar.cell, inv);
+                double d = minimum_image_distance(save.interstitial_pos[s], metal_coords[m], cell, inv);
                 if (d <= cutoff) {
                     int mt = save.metal_types[m];
                     if (mt >= 0 && mt < (int)neighbor_counts.size()) {
@@ -83,8 +120,8 @@ compute_inter_metal_wc(const SaveData& save,
 
 static std::vector<std::pair<std::string, std::string>>
 compute_metal_metal_wc(const SaveData& save,
-                       const PoscarData& contcar,
                        const std::vector<Vec3>& metal_coords,
+                       const std::array<Vec3, 3>& cell,
                        const std::array<Vec3, 3>& inv,
                        double cutoff)
 {
@@ -101,7 +138,7 @@ compute_metal_metal_wc(const SaveData& save,
             center_count++;
             for (int j = 0; j < (int)metal_coords.size(); ++j) {
                 if (i == j) continue;
-                double d = minimum_image_distance(metal_coords[i], metal_coords[j], contcar.cell, inv);
+                double d = minimum_image_distance(metal_coords[i], metal_coords[j], cell, inv);
                 if (d <= cutoff) {
                     int nt = save.metal_types[j];
                     if (nt >= 0 && nt < (int)neighbor_counts.size()) {
@@ -126,20 +163,30 @@ compute_metal_metal_wc(const SaveData& save,
 }
 
 static std::vector<std::pair<std::string, std::string>>
-compute_wc(const fs::path& state_dir, double inter_metal_cutoff, double metal_metal_cutoff)
+compute_wc(const fs::path& state_dir, double inter_metal_cutoff, double metal_metal_cutoff, bool use_reference)
 {
-    SaveData save = read_save(state_dir / "SAVE");
-    PoscarData contcar = read_poscar(state_dir / "CONTCAR");
-    auto metal_coords = metal_coords_by_save_order(save, contcar);
-    auto inv = inverse_cell(contcar.cell);
+    fs::path save_path = use_reference ? (state_dir / "REFERENCE_SAVE") : (state_dir / "SAVE");
+    SaveData save = read_save(save_path);
+    std::vector<Vec3> metal_coords;
+    std::array<Vec3, 3> cell{};
+    if (use_reference) {
+        metal_coords = save.metal_pos;
+        cell = save.cell;
+    } else {
+        PoscarData contcar = read_poscar(state_dir / "CONTCAR");
+        use_contcar_interstitial_positions(save, contcar);
+        metal_coords = metal_coords_by_save_order(save, contcar);
+        cell = contcar.cell;
+    }
+    auto inv = inverse_cell(cell);
 
     std::vector<std::pair<std::string, std::string>> rows;
     if (inter_metal_cutoff > 0.0) {
-        auto part = compute_inter_metal_wc(save, contcar, metal_coords, inv, inter_metal_cutoff);
+        auto part = compute_inter_metal_wc(save, metal_coords, cell, inv, inter_metal_cutoff);
         rows.insert(rows.end(), part.begin(), part.end());
     }
     if (metal_metal_cutoff > 0.0) {
-        auto part = compute_metal_metal_wc(save, contcar, metal_coords, inv, metal_metal_cutoff);
+        auto part = compute_metal_metal_wc(save, metal_coords, cell, inv, metal_metal_cutoff);
         rows.insert(rows.end(), part.begin(), part.end());
     }
     return rows;
@@ -147,24 +194,24 @@ compute_wc(const fs::path& state_dir, double inter_metal_cutoff, double metal_me
 
 int main(int argc, char** argv)
 {
-    if (argc < 2) {
-        usage();
-        return 2;
-    }
-
-    fs::path state_dir = argv[1];
+    fs::path root = ".";
     double inter_metal_cutoff = -1.0;
     double metal_metal_cutoff = -1.0;
     fs::path output = "struc_WC";
+    bool use_reference = false;
 
-    for (int i = 2; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--inter-metal-cutoff" && i + 1 < argc) {
+        if (a == "--root" && i + 1 < argc) {
+            root = argv[++i];
+        } else if (a == "--inter-metal-cutoff" && i + 1 < argc) {
             inter_metal_cutoff = std::stod(argv[++i]);
         } else if (a == "--metal-metal-cutoff" && i + 1 < argc) {
             metal_metal_cutoff = std::stod(argv[++i]);
         } else if (a == "--output" && i + 1 < argc) {
             output = argv[++i];
+        } else if (a == "-ref" || a == "--ref") {
+            use_reference = true;
         } else if (a == "-h" || a == "--help") {
             usage();
             return 0;
@@ -179,16 +226,35 @@ int main(int argc, char** argv)
         std::cerr << "At least one of --inter-metal-cutoff or --metal-metal-cutoff must be positive.\n";
         return 2;
     }
-    if (!output.is_absolute()) output = state_dir / output;
+    if (output.is_absolute()) {
+        std::cerr << "--output must be a filename or a relative path inside each state directory.\n";
+        return 2;
+    }
 
     try {
-        auto rows = compute_wc(state_dir, inter_metal_cutoff, metal_metal_cutoff);
-        std::ofstream out(output);
-        if (!out) throw std::runtime_error("cannot write " + output.string());
-        for (const auto& row : rows) {
-            out << row.first << "\t" << row.second << "\n";
+        root = fs::absolute(root);
+        fs::path mcprocess = root / "mcprocess";
+        std::vector<fs::path> states;
+        if (fs::exists(mcprocess) && fs::is_directory(mcprocess)) {
+            states = numbered_state_dirs(mcprocess);
+        } else if ((use_reference && fs::exists(root / "REFERENCE_SAVE")) ||
+                   (!use_reference && fs::exists(root / "SAVE") && fs::exists(root / "CONTCAR"))) {
+            states.push_back(root);
+        } else {
+            throw std::runtime_error("cannot find mcprocess/ under " + root.string());
         }
-        std::cout << "Wrote " << output << "\n";
+        if (states.empty()) throw std::runtime_error("no numbered state directories found in " + mcprocess.string());
+
+        for (const auto& state_dir : states) {
+            auto rows = compute_wc(state_dir, inter_metal_cutoff, metal_metal_cutoff, use_reference);
+            fs::path out_path = state_dir / output;
+            std::ofstream out(out_path);
+            if (!out) throw std::runtime_error("cannot write " + out_path.string());
+            for (const auto& row : rows) {
+                out << row.first << "\t" << row.second << "\n";
+            }
+            std::cout << "Wrote " << out_path << "\n";
+        }
     } catch (const std::exception& e) {
         std::cerr << "warrencowley error: " << e.what() << "\n";
         return 1;
