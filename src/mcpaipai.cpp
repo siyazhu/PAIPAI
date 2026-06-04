@@ -424,6 +424,69 @@ struct MoveRecord {
     double hastings_ratio = 1.0;
 };
 
+bool pick_metal_swap_sites(const Structure& struc, int& a, int& b)
+{
+    a = -1;
+    b = -1;
+    if (struc.num_metallic_atoms < 2) return false;
+
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+        int i = std::rand() % struc.num_metallic_atoms;
+        int j = std::rand() % struc.num_metallic_atoms;
+        if (i != j && struc.atomtype[i] != struc.atomtype[j]) {
+            a = i;
+            b = j;
+            return true;
+        }
+    }
+
+    for (int i = 0; i < struc.num_metallic_atoms; ++i) {
+        for (int j = i + 1; j < struc.num_metallic_atoms; ++j) {
+            if (struc.atomtype[i] != struc.atomtype[j]) {
+                a = i;
+                b = j;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool pick_interstitial_swap_sites(const Structure& struc, int& a, int& b)
+{
+    a = -1;
+    b = -1;
+    if (struc.num_interstitial < 2) return false;
+
+    std::vector<int> occupied;
+    occupied.reserve(struc.num_interstitial);
+    for (int i = 0; i < struc.num_interstitial; ++i) {
+        if (struc.interstitial_postype[i] != -1) occupied.push_back(i);
+    }
+    if (occupied.empty()) return false;
+
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+        int i = occupied[std::rand() % occupied.size()];
+        int j = std::rand() % struc.num_interstitial;
+        if (i != j && struc.interstitial_postype[i] != struc.interstitial_postype[j]) {
+            a = i;
+            b = j;
+            return true;
+        }
+    }
+
+    for (int i : occupied) {
+        for (int j = 0; j < struc.num_interstitial; ++j) {
+            if (i != j && struc.interstitial_postype[i] != struc.interstitial_postype[j]) {
+                a = i;
+                b = j;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Apply one MC proposal move to a Structure.  This is shared by the original
 // fast+slow search mode and the finiteT direct-to-slow mode.
 MoveRecord apply_random_mc_move(Structure& struc,
@@ -441,23 +504,21 @@ MoveRecord apply_random_mc_move(Structure& struc,
     int r = std::rand() % SUMP;
     if (r < P1) {
         // swapMeta
-        int a = std::rand() % struc.num_metallic_atoms;
-        int b = std::rand() % struc.num_metallic_atoms;
-        while (struc.atomtype[a] == struc.atomtype[b]) {
-            a = std::rand() % struc.num_metallic_atoms;
-            b = std::rand() % struc.num_metallic_atoms;
+        int a = -1, b = -1;
+        if (!pick_metal_swap_sites(struc, a, b)) {
+            std::cerr << "[WARN] metal swap skipped because no unlike metal pair is available.\n";
+            return rec;
         }
         struc.swapMetal(a,b);
         rec = {"swap_metal", a, b};
     } else if ((r -= P1) < P2) {
         // swapInterstitial: pick one occupied site and one site with a different
         // occupation state/species.  This preserves the total numbers of B/O.
-        int a = std::rand() % struc.num_interstitial;
-        while (struc.interstitial_postype[a] == -1)
-            a = (a+1) % struc.num_interstitial;
-        int b = std::rand() % struc.num_interstitial;
-        while (struc.interstitial_postype[b] == struc.interstitial_postype[a])
-            b = std::rand() % struc.num_interstitial;
+        int a = -1, b = -1;
+        if (!pick_interstitial_swap_sites(struc, a, b)) {
+            std::cerr << "[WARN] interstitial swap skipped because no occupied differing site pair is available.\n";
+            return rec;
+        }
         struc.swapInterstitial(a,b);
         rec = {"swap_interstitial", a, b};
     } else if ((r -= P2) < P3) {
@@ -481,12 +542,11 @@ MoveRecord apply_random_mc_move(Structure& struc,
             std::cerr << "[WARN] cluster interstitial move skipped because neighbor map could not be read.\n";
             return rec;
         }
-        int a = std::rand() % struc.num_interstitial;
-        while (struc.interstitial_postype[a] == -1)
-            a = (a+1) % struc.num_interstitial;
-        int b = std::rand() % struc.num_interstitial;
-        while (struc.interstitial_postype[b] == struc.interstitial_postype[a])
-            b = std::rand() % struc.num_interstitial;
+        int a = -1, b = -1;
+        if (!pick_interstitial_swap_sites(struc, a, b)) {
+            std::cerr << "[WARN] cluster interstitial move skipped because no occupied differing site pair is available.\n";
+            return rec;
+        }
         struc.clusterSwapInterstitial(a,b);
         rec = {"cluster_swap_interstitial", a, b};
     } else if ((r -= P4) < P5) {
@@ -500,7 +560,7 @@ MoveRecord apply_random_mc_move(Structure& struc,
 }
 
 // Generate one candidate for a given fast slot: uses current SAVE.
-void generate_candidate_for_slot(int slot,
+bool generate_candidate_for_slot(int slot,
                                  const Args& cfg,
                                  const fs::path& root,
                                  Structure& struc,
@@ -511,9 +571,16 @@ void generate_candidate_for_slot(int slot,
     Structure current_ref = struc;
 
     // 2) Random MC move.
-    MoveRecord move = apply_random_mc_move(struc, cfg, root, SUMP);
+    MoveRecord move;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        struc = current_ref;
+        move = apply_random_mc_move(struc, cfg, root, SUMP);
+        if (move.type != "none") break;
+    }
     if (move.type == "none") {
-        return;
+        std::cerr << "[WARN] no valid MC move could be generated for fast slot "
+                  << slot << ".\n";
+        return false;
     }
     Structure trial_init = make_relaxed_seed_for_trial(root, current_ref, struc);
 
@@ -546,6 +613,7 @@ void generate_candidate_for_slot(int slot,
     // 4) Trigger fast worker by touching .go_k
     fs::path gof = fast_dir / (".go_" + std::to_string(slot));
     std::ofstream ofs(gof); // touch
+    return true;
 }
 
 // Submit the initial unmodified structure directly to the slow-worker queue.
@@ -615,7 +683,12 @@ std::string submit_finiteT_trial_task(const fs::path& root,
     }
     Structure current_ref = struc;
 
-    MoveRecord move = apply_random_mc_move(struc, cfg, root, SUMP);
+    MoveRecord move;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        struc = current_ref;
+        move = apply_random_mc_move(struc, cfg, root, SUMP);
+        if (move.type != "none") break;
+    }
     if (move.type == "none") {
         std::cerr << "[finiteT] no valid MC move was available for trial submission.\n";
         return "";
@@ -1024,9 +1097,10 @@ int main(int argc, char** argv){
 
                 fs::path gof = ROOT / "fast" / (".go_" + std::to_string(k));
                 if (fs::exists(gof)) continue;  // slot is busy
-                generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP);
-                processed_any = true;
-                cout << "generating candidate for worker #" << k << " successfully" << endl;
+                if (generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP)) {
+                    processed_any = true;
+                    cout << "generating candidate for worker #" << k << " successfully" << endl;
+                }
             }
         }
 

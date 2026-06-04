@@ -24,18 +24,40 @@ add_executable(findinter
     src/findinter_main.cpp
 )
 
+add_executable(warrencowley
+    src/warrencowley.cpp
+)
+
+add_executable(packmc
+    src/packmc.cpp
+)
+
 target_include_directories(mc_paipai PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(findinter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(warrencowley PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(packmc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 target_compile_options(mc_paipai PRIVATE -O2 -pthread)
 target_compile_options(findinter PRIVATE -O2)
+target_compile_options(warrencowley PRIVATE -O2)
+target_compile_options(packmc PRIVATE -O2)
 target_link_libraries(mc_paipai PRIVATE stdc++fs pthread)
+target_link_libraries(warrencowley PRIVATE stdc++fs)
+target_link_libraries(packmc PRIVATE stdc++fs)
 
 install(TARGETS mc_paipai
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
 install(TARGETS findinter
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(TARGETS warrencowley
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(TARGETS packmc
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 

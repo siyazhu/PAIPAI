@@ -516,7 +516,60 @@ This is intended as a practical input-building tool for bulk, defect, grain-boun
 
 ---
 
-## 5. GPU support
+## 6. MC-process analysis tools
+
+PAIPAI v2.0-dev includes small command-line tools for post-processing accepted MC states.
+
+To compute Warren-Cowley parameters for one accepted state:
+
+```bash
+warrencowley mcprocess/000031 --inter-metal-cutoff 2.5
+```
+
+You can also compute metal-metal Warren-Cowley parameters, or request both in one run:
+
+```bash
+warrencowley mcprocess/000031 --metal-metal-cutoff 3.0
+warrencowley mcprocess/000031 --inter-metal-cutoff 2.5 --metal-metal-cutoff 3.0
+```
+
+At least one cutoff must be provided. This writes `mcprocess/000031/struc_WC`. Each line has two tab-separated fields:
+
+```text
+WC_B_Nb    value
+WC_Nb_Ta   value
+```
+
+The interstitial-metal Warren-Cowley parameter is computed as:
+
+```text
+alpha(I-M) = 1 - P(M around I within cutoff) / c_M
+```
+
+The metal-metal form uses the same convention for metal neighbors around a chosen metal species.
+
+To package all accepted structures and build a summary table:
+
+```bash
+packmc mcprocess
+```
+
+This creates:
+
+- `mcprocess_CONTCARs/`, containing `CONTCAR000001`, `CONTCAR000002`, ...
+- `mcprocess_CONTCARs.tar`
+- `mcprocess_summary.tsv`
+
+The summary table columns are:
+
+- MC state number
+- energy
+- trial mode from `meta.json`
+- one column for every statistic already found in `struc_*` files, including precomputed `struc_WC`
+
+---
+
+## 7. GPU support
 
 PAIPAI v2.0 supports:
 - GPU-accelerated MLIP structural relaxation
@@ -532,7 +585,7 @@ Worker processes can also be distributed across multiple GPUs using round-robin 
 
 ---
 
-## 6. Bug fixes and workflow cleanup
+## 8. Bug fixes and workflow cleanup
 
 PAIPAI v2.0 additionally:
 - fixes overall atomic drift issues
