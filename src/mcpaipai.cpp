@@ -36,7 +36,8 @@ struct Args {
     double intsite_hop_cutoff = 3.0;       // cutoff for interstitial-site local hop graph (Angstrom)
     std::string mode = "search";          // "search" = fast+slow pool; "finiteT" = one direct slow task at a time
     double interstitial_site_cutoff = 1.5; // max relaxed interstitial distance to assigned site (Angstrom)
-    std::string resume_state_dir;          // existing SAVE/CONTCAR/energy seed for finiteT
+    std::string resume_state_dir;          // existing SAVE/CONTCAR/energy seed
+    bool continue_run = false;             // continue from ./mcprocess latest accepted state
 };
 
 void print_help(const char* prog){
@@ -48,7 +49,7 @@ void print_help(const char* prog){
               << "[--intsite-neighbor-cutoff R] [--intsite-hop-cutoff R] "
               << "[--mode search|finiteT] [--finiteT] "
               << "[--interstitial-site-cutoff R] "
-              << "[--resume-state DIR]\n";
+              << "[--resume-state DIR] [--continue]\n";
 }
 
 Args parse_args(int argc, char** argv){
@@ -76,6 +77,7 @@ Args parse_args(int argc, char** argv){
         else if (s=="--finiteT"){ a.mode="finiteT"; }
         else if (s=="--interstitial-site-cutoff"){ need("--interstitial-site-cutoff"); a.interstitial_site_cutoff=std::stod(argv[++i]); }
         else if (s=="--resume-state"){ need("--resume-state"); a.resume_state_dir=argv[++i]; }
+        else if (s=="--continue"){ a.continue_run=true; }
         else { std::cerr<<"Unknown arg: "<<s<<"\n"; print_help(argv[0]); std::exit(2); }
     }
     int sum = a.p_swap_metal + a.p_swap_inter + a.p_hop_inter + a.p_cluster_inter +
@@ -97,12 +99,12 @@ Args parse_args(int argc, char** argv){
         std::cerr << "--intsite-hop-cutoff must be positive.\n";
         std::exit(2);
     }
-    if (!a.resume_state_dir.empty() && a.mode != "finiteT") {
-        std::cerr << "--resume-state is only supported with --mode finiteT\n";
+    if (a.continue_run && !a.resume_state_dir.empty()) {
+        std::cerr << "--continue and --resume-state cannot be used together.\n";
         std::exit(2);
     }
-    if (a.resume_state_dir.empty() && a.input_struc.empty()) {
-        std::cerr << "INPUT_STRUCTURE is required unless --resume-state is used.\n";
+    if (a.resume_state_dir.empty() && !a.continue_run && a.input_struc.empty()) {
+        std::cerr << "INPUT_STRUCTURE is required unless --resume-state or --continue is used.\n";
         print_help(argv[0]);
         std::exit(2);
     }
@@ -146,6 +148,19 @@ std::optional<double> read_resume_energy(const fs::path& resume_dir) {
     return std::nullopt;
 }
 
+std::optional<int> read_last_logged_mc_step(const fs::path& log_path) {
+    std::ifstream in(log_path);
+    if (!in) return std::nullopt;
+    int last = 0;
+    std::string word;
+    while (in >> word) {
+        if (word != "STEP") continue;
+        int n = 0;
+        if (in >> n) last = std::max(last, n);
+    }
+    return last > 0 ? std::optional<int>(last) : std::nullopt;
+}
+
 bool looks_like_state_dir(const fs::path& dir) {
     return fs::exists(dir / "SAVE") &&
            fs::exists(dir / "CONTCAR") &&
@@ -187,6 +202,10 @@ fs::path resolve_resume_state_dir(const fs::path& requested) {
     return best.empty() ? requested : best;
 }
 
+fs::path latest_mcprocess_state_dir(const fs::path& root) {
+    return resolve_resume_state_dir(root / "mcprocess");
+}
+
 // Copy small file (overwrite).
 void copy_file_overwrite(const fs::path& src, const fs::path& dst) {
     if (!fs::exists(src)) return;
@@ -224,6 +243,7 @@ bool initialize_from_resume_state(const fs::path& root,
 
     copy_file_overwrite(save, root / "SAVE");
     copy_file_overwrite(contcar, root / "CONTCAR");
+    copy_file_overwrite(state_dir / "REFERENCE_SAVE", root / "REFERENCE_SAVE");
 
     have_state = true;
     current_E = *energy;
@@ -235,7 +255,7 @@ bool initialize_from_resume_state(const fs::path& root,
         << " E = " << std::setprecision(12) << current_E << "\n";
     log.flush();
 
-    std::cout << "[resume] initialized finiteT from " << state_dir
+    std::cout << "[resume] initialized from " << state_dir
               << " E_current = " << std::setprecision(12) << current_E << "\n";
     return true;
 }
@@ -989,11 +1009,19 @@ int main(int argc, char** argv){
     Structure struc;
     fs::path resolved_resume_dir;
     std::string seed_struc;
-    if (cfg.resume_state_dir.empty()) {
-        seed_struc = cfg.input_struc;
-    } else {
+    if (cfg.continue_run) {
+        resolved_resume_dir = latest_mcprocess_state_dir(ROOT);
+        if (!looks_like_state_dir(resolved_resume_dir)) {
+            std::cerr << "[ERROR] --continue could not find a valid latest state under "
+                      << (ROOT / "mcprocess") << "\n";
+            return 1;
+        }
+        seed_struc = (resolved_resume_dir / "SAVE").string();
+    } else if (!cfg.resume_state_dir.empty()) {
         resolved_resume_dir = resolve_resume_state_dir(cfg.resume_state_dir);
         seed_struc = (resolved_resume_dir / "SAVE").string();
+    } else {
+        seed_struc = cfg.input_struc;
     }
     if (!struc.readstruc(seed_struc.c_str())) {
         std::cerr << "[ERROR] failed to read structure seed: "
@@ -1006,7 +1034,13 @@ int main(int argc, char** argv){
     struc.outputIntsiteHopNeighborMap("intsite_hop_neighbors.dat");
     struc.outputsave("SAVE");
 
-    std::ofstream log("mc.log");
+    std::ofstream log;
+    if (cfg.continue_run) {
+        log.open("mc.log", std::ios::app);
+        log << "\n";
+    } else {
+        log.open("mc.log");
+    }
     log << "# MC mode=" << cfg.mode
         << " fast=" << cfg.workers
         << " steps=" << cfg.steps
@@ -1022,6 +1056,7 @@ int main(int argc, char** argv){
         << " intsite_hop_cutoff=" << cfg.intsite_hop_cutoff
         << " interstitial_site_cutoff=" << cfg.interstitial_site_cutoff
         << " resume_state=" << (cfg.resume_state_dir.empty() ? "<none>" : cfg.resume_state_dir)
+        << " continue=" << (cfg.continue_run ? "true" : "false")
         << "\n";
 
     bool have_state = false;
@@ -1029,7 +1064,27 @@ int main(int argc, char** argv){
     int mc_steps = 0;
     int accept_count = 0;
 
-    if (!cfg.resume_state_dir.empty()) {
+    if (cfg.continue_run) {
+        if (!initialize_from_resume_state(ROOT, resolved_resume_dir,
+                                          current_E, have_state,
+                                          mc_steps, accept_count, log)) {
+            std::cerr << "[ERROR] failed to initialize from --continue state.\n";
+            return 1;
+        }
+        if (auto last_step = read_last_logged_mc_step(ROOT / "mc.log")) {
+            mc_steps = *last_step;
+        }
+        log << "CONTINUE_RUN from=" << resolved_resume_dir.string()
+            << " mc_steps=" << mc_steps
+            << " fast_screened=" << read_counter_value(ROOT, "fast_count")
+            << " mc_count=" << read_counter_value(ROOT, "mc_count")
+            << "\n";
+        log.flush();
+        std::cout << "[continue] continuing from " << resolved_resume_dir
+                  << " mc_steps=" << mc_steps
+                  << " fast_screened=" << read_counter_value(ROOT, "fast_count")
+                  << "\n";
+    } else if (!cfg.resume_state_dir.empty()) {
         if (!initialize_from_resume_state(ROOT, resolved_resume_dir,
                                           current_E, have_state,
                                           mc_steps, accept_count, log)) {

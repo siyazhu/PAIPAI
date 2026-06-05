@@ -349,12 +349,13 @@ for example GPU submission scripts.
 
 | Option | Description |
 |---|---|
-| `--input FILE` | Input structure file. Not required when `--resume-state` is used |
+| `--input FILE` | Input structure file. Not required when `--resume-state` or `--continue` is used |
 | `--mode MODE` | `search` or `finiteT` |
 | `--device DEV` | `cpu` or `cuda` |
 | `--model NAME` | MLIP model |
 | `--root DIR` | Working directory. If omitted for `finiteT --resume-state`, PAIPAI uses `finiteT_<temp>` |
-| `--resume-state DIR` | Start `finiteT` from an existing state directory containing `SAVE`, `CONTCAR`, and `energy` or `meta.json`. If `DIR` is an `mcprocess` directory, the latest numbered state is used |
+| `--resume-state DIR` | Start from an existing state directory containing `SAVE`, `CONTCAR`, and `energy` or `meta.json`. If `DIR` is an `mcprocess` directory, the latest numbered state is used |
+| `--continue` | Continue an interrupted run in the current root from the latest `mcprocess/000xxx` state |
 
 ---
 
@@ -447,7 +448,7 @@ PAIPAI v2.0 now supports two distinct workflows.
 - unbiased finite-temperature ensemble sampling
 - rejects trials where relaxation moves an interstitial atom to a different site
 
-`finiteT` can also resume from a state selected during `search`:
+Both modes can resume from a saved state selected during `search` or `finiteT`:
 
 ```bash
 paipai --mode finiteT --resume-state search/mcprocess/000031 --temp 700
@@ -460,6 +461,15 @@ paipai --mode finiteT --resume-state search/mcprocess --temp 700
 ```
 
 In that case PAIPAI uses the latest numbered child directory. The resumed state uses `SAVE` as the reference occupation, `CONTCAR` as the relaxed coordinate seed, and `energy` as the current energy. `--input` is not required in resume mode. If `--root` is omitted, the run directory defaults to `finiteT_<temp>`, such as `finiteT_700`.
+
+To continue an interrupted or too-short run in the same root directory, use:
+
+```bash
+paipai --mode search --continue --steps 300000
+paipai --mode finiteT --continue --steps 20000
+```
+
+`--continue` automatically reads the latest accepted state from `mcprocess/`, restores `SAVE` and `CONTCAR`, keeps existing worker queues and counters, appends to `mc.log`, and continues until the requested step budget is reached. In `search`, the budget is still compared against `counters/fast_count`; in `finiteT`, PAIPAI resumes the proposal number from the latest `STEP` entry in `mc.log`.
 
 ---
 
