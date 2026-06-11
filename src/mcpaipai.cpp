@@ -16,9 +16,14 @@
 
 #include "structure.h"   // your Structure class
 #include "json.hpp"      // nlohmann::json single-header
+#include "prefast.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
+using paipai_prefast::PrefastConfig;
+using paipai_prefast::PrefastModel;
+using paipai_prefast::SparseDescriptor;
+using paipai_prefast::TrialScore;
 
 /* ---------- CLI configuration ---------- */
 struct Args {
@@ -38,6 +43,7 @@ struct Args {
     double interstitial_site_cutoff = 1.5; // max relaxed interstitial distance to assigned site (Angstrom)
     std::string resume_state_dir;          // existing SAVE/CONTCAR/energy seed
     bool continue_run = false;             // continue from ./mcprocess latest accepted state
+    PrefastConfig prefast;
 };
 
 void print_help(const char* prog){
@@ -49,7 +55,13 @@ void print_help(const char* prog){
               << "[--intsite-neighbor-cutoff R] [--intsite-hop-cutoff R] "
               << "[--mode search|finiteT] [--finiteT] "
               << "[--interstitial-site-cutoff R] "
-              << "[--resume-state DIR] [--continue]\n";
+              << "[--resume-state DIR] [--continue] "
+              << "[--prefast on|off] [--prefast-candidates-per-slot N] "
+              << "[--prefast-basis ref-dz] [--prefast-nshells N] "
+              << "[--prefast-peak-scan-cutoff R] [--prefast-peak-tol R] "
+              << "[--prefast-sigma-small R] [--prefast-sigma-large R] "
+              << "[--prefast-cutoff-margin R] [--prefast-learning-rate LR] "
+              << "[--prefast-lms-epsilon EPS] [--prefast-weight-decay R]\n";
 }
 
 Args parse_args(int argc, char** argv){
@@ -78,6 +90,24 @@ Args parse_args(int argc, char** argv){
         else if (s=="--interstitial-site-cutoff"){ need("--interstitial-site-cutoff"); a.interstitial_site_cutoff=std::stod(argv[++i]); }
         else if (s=="--resume-state"){ need("--resume-state"); a.resume_state_dir=argv[++i]; }
         else if (s=="--continue"){ a.continue_run=true; }
+        else if (s=="--prefast"){
+            need("--prefast");
+            std::string v = argv[++i];
+            if (v == "on" || v == "true" || v == "1") a.prefast.enabled = true;
+            else if (v == "off" || v == "false" || v == "0") a.prefast.enabled = false;
+            else { std::cerr << "--prefast must be on or off\n"; std::exit(2); }
+        }
+        else if (s=="--prefast-candidates-per-slot"){ need("--prefast-candidates-per-slot"); a.prefast.candidates_per_slot=std::max(1, std::stoi(argv[++i])); }
+        else if (s=="--prefast-basis"){ need("--prefast-basis"); a.prefast.basis=argv[++i]; }
+        else if (s=="--prefast-nshells"){ need("--prefast-nshells"); a.prefast.nshells=std::max(1, std::stoi(argv[++i])); }
+        else if (s=="--prefast-peak-scan-cutoff"){ need("--prefast-peak-scan-cutoff"); a.prefast.peak_scan_cutoff=std::stod(argv[++i]); }
+        else if (s=="--prefast-peak-tol"){ need("--prefast-peak-tol"); a.prefast.peak_tol=std::stod(argv[++i]); }
+        else if (s=="--prefast-sigma-small"){ need("--prefast-sigma-small"); a.prefast.sigma_small=std::stod(argv[++i]); }
+        else if (s=="--prefast-sigma-large"){ need("--prefast-sigma-large"); a.prefast.sigma_large=std::stod(argv[++i]); }
+        else if (s=="--prefast-cutoff-margin"){ need("--prefast-cutoff-margin"); a.prefast.cutoff_margin=std::stod(argv[++i]); }
+        else if (s=="--prefast-learning-rate"){ need("--prefast-learning-rate"); a.prefast.learning_rate=std::stod(argv[++i]); }
+        else if (s=="--prefast-lms-epsilon"){ need("--prefast-lms-epsilon"); a.prefast.lms_epsilon=std::stod(argv[++i]); }
+        else if (s=="--prefast-weight-decay"){ need("--prefast-weight-decay"); a.prefast.weight_decay=std::stod(argv[++i]); }
         else { std::cerr<<"Unknown arg: "<<s<<"\n"; print_help(argv[0]); std::exit(2); }
     }
     int sum = a.p_swap_metal + a.p_swap_inter + a.p_hop_inter + a.p_cluster_inter +
@@ -101,6 +131,17 @@ Args parse_args(int argc, char** argv){
     }
     if (a.continue_run && !a.resume_state_dir.empty()) {
         std::cerr << "--continue and --resume-state cannot be used together.\n";
+        std::exit(2);
+    }
+    if (a.prefast.peak_scan_cutoff <= 0.0 ||
+        a.prefast.peak_tol <= 0.0 ||
+        a.prefast.sigma_small <= 0.0 ||
+        a.prefast.sigma_large <= 0.0 ||
+        a.prefast.cutoff_margin < 0.0 ||
+        a.prefast.learning_rate < 0.0 ||
+        a.prefast.lms_epsilon <= 0.0 ||
+        a.prefast.weight_decay < 0.0) {
+        std::cerr << "Invalid prefast parameter value.\n";
         std::exit(2);
     }
     if (a.resume_state_dir.empty() && !a.continue_run && a.input_struc.empty()) {
@@ -444,6 +485,32 @@ struct MoveRecord {
     double hastings_ratio = 1.0;
 };
 
+json sparse_descriptor_to_json(const SparseDescriptor& d)
+{
+    json j = json::object();
+    for (const auto& kv : d.values) {
+        j[std::to_string(kv.first)] = kv.second;
+    }
+    return j;
+}
+
+SparseDescriptor sparse_descriptor_from_json(const json& j)
+{
+    SparseDescriptor d;
+    if (!j.is_object()) return d;
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        try {
+            int idx = std::stoi(it.key());
+            double value = it.value().get<double>();
+            if (std::isfinite(value) && std::fabs(value) > 0.0) {
+                d.values[idx] = value;
+            }
+        } catch (...) {
+        }
+    }
+    return d;
+}
+
 bool pick_metal_swap_sites(const Structure& struc, int& a, int& b)
 {
     a = -1;
@@ -579,30 +646,83 @@ MoveRecord apply_random_mc_move(Structure& struc,
     return rec;
 }
 
+struct CandidateTrial {
+    Structure trial_ref;
+    Structure trial_init;
+    MoveRecord move;
+    TrialScore prefast_score;
+    int generated_index = 0;
+};
+
+bool generate_one_trial_from_current(const Structure& current_ref,
+                                     const Args& cfg,
+                                     const fs::path& root,
+                                     int SUMP,
+                                     CandidateTrial& out)
+{
+    Structure trial_ref = current_ref;
+    MoveRecord move;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        trial_ref = current_ref;
+        move = apply_random_mc_move(trial_ref, cfg, root, SUMP);
+        if (move.type != "none") break;
+    }
+    if (move.type == "none") return false;
+
+    out.trial_ref = trial_ref;
+    out.trial_init = make_relaxed_seed_for_trial(root, current_ref, trial_ref);
+    out.move = move;
+    return true;
+}
+
 // Generate one candidate for a given fast slot: uses current SAVE.
 bool generate_candidate_for_slot(int slot,
                                  const Args& cfg,
                                  const fs::path& root,
                                  Structure& struc,
-                                 int SUMP)
+                                 int SUMP,
+                                 PrefastModel* prefast,
+                                 double current_E)
 {
     // 1) Load current discrete reference state from SAVE.
     struc.readstruc("SAVE");
     Structure current_ref = struc;
 
-    // 2) Random MC move.
-    MoveRecord move;
-    for (int attempt = 0; attempt < 100; ++attempt) {
-        struc = current_ref;
-        move = apply_random_mc_move(struc, cfg, root, SUMP);
-        if (move.type != "none") break;
+    // 2) Generate either one ordinary trial, or a small prefast-ranked batch.
+    int n_candidates = (prefast && prefast->enabled())
+                     ? std::max(1, cfg.prefast.candidates_per_slot)
+                     : 1;
+    std::vector<CandidateTrial> candidates;
+    candidates.reserve(n_candidates);
+    for (int ci = 0; ci < n_candidates; ++ci) {
+        CandidateTrial cand;
+        cand.generated_index = ci;
+        if (!generate_one_trial_from_current(current_ref, cfg, root, SUMP, cand)) {
+            continue;
+        }
+        if (prefast && prefast->enabled()) {
+            cand.prefast_score = prefast->score(current_ref, cand.trial_ref);
+        }
+        candidates.push_back(cand);
     }
-    if (move.type == "none") {
+
+    if (candidates.empty()) {
         std::cerr << "[WARN] no valid MC move could be generated for fast slot "
                   << slot << ".\n";
         return false;
     }
-    Structure trial_init = make_relaxed_seed_for_trial(root, current_ref, struc);
+
+    int best = 0;
+    if (prefast && prefast->enabled()) {
+        for (int i = 1; i < (int)candidates.size(); ++i) {
+            if (candidates[i].prefast_score.dE_pred <
+                candidates[best].prefast_score.dE_pred) {
+                best = i;
+            }
+        }
+    }
+    CandidateTrial& chosen = candidates[best];
+    struc = chosen.trial_ref;
 
     // 3) Dump candidate directly into fast/POSCARk, fast/SAVEk
     fs::path fast_dir = root / "fast";
@@ -612,18 +732,33 @@ bool generate_candidate_for_slot(int slot,
     fs::path sav = fast_dir / ("SAVE"   + std::to_string(slot));
     fs::path met = fast_dir / ("META"   + std::to_string(slot));
 
-    trial_init.outputvasp(pos.string().c_str());
-    struc.outputsave(sav.string().c_str());
+    chosen.trial_init.outputvasp(pos.string().c_str());
+    chosen.trial_ref.outputsave(sav.string().c_str());
     json meta;
     meta["source"] = "search_fast_screen";
     meta["mode"] = "search";
     meta["source_slot"] = slot;
-    meta["move_type"] = move.type;
-    meta["move_site_a"] = move.a;
-    meta["move_site_b"] = move.b;
-    meta["move_forward_choices"] = move.forward_choices;
-    meta["move_reverse_choices"] = move.reverse_choices;
-    meta["hastings_ratio"] = move.hastings_ratio;
+    meta["move_type"] = chosen.move.type;
+    meta["move_site_a"] = chosen.move.a;
+    meta["move_site_b"] = chosen.move.b;
+    meta["move_forward_choices"] = chosen.move.forward_choices;
+    meta["move_reverse_choices"] = chosen.move.reverse_choices;
+    meta["hastings_ratio"] = chosen.move.hastings_ratio;
+    if (prefast && prefast->enabled()) {
+        meta["prefast_enabled"] = true;
+        meta["prefast_basis"] = cfg.prefast.basis;
+        meta["prefast_candidates_per_slot"] = n_candidates;
+        meta["prefast_candidates_generated"] = (int)candidates.size();
+        meta["prefast_selected_rank"] = 1;
+        meta["prefast_selected_generated_index"] = chosen.generated_index;
+        meta["prefast_dE_pred"] = chosen.prefast_score.dE_pred;
+        meta["prefast_score"] = chosen.prefast_score.dE_pred;
+        meta["prefast_norm_dD"] = chosen.prefast_score.norm_dD;
+        meta["prefast_base_energy"] = current_E;
+        meta["prefast_delta"] = sparse_descriptor_to_json(chosen.prefast_score.delta);
+    } else {
+        meta["prefast_enabled"] = false;
+    }
     meta["stamp"] = "created_by_cpp_master";
     {
         std::ofstream ofs(met);
@@ -775,6 +910,7 @@ bool process_report_file(const fs::path& root,
                          double temp,
                          std::mt19937_64& rng,
                          std::ofstream& log,
+                         PrefastModel* prefast = nullptr,
                          bool* accepted_state_changed = nullptr)
 {
     if (accepted_state_changed) *accepted_state_changed = false;
@@ -900,6 +1036,10 @@ bool process_report_file(const fs::path& root,
     ++mc_steps;
     double hastings_ratio = 1.0;
     std::string move_type = "<unknown>";
+    bool meta_prefast_enabled = false;
+    double prefast_dE_pred = 0.0;
+    double prefast_base_energy = current_E;
+    SparseDescriptor prefast_delta;
     try {
         std::ifstream meta_ifs(meta_path);
         if (meta_ifs) {
@@ -907,11 +1047,27 @@ bool process_report_file(const fs::path& root,
             meta_ifs >> meta;
             hastings_ratio = meta.value("hastings_ratio", 1.0);
             move_type = meta.value("move_type", move_type);
+            meta_prefast_enabled = meta.value("prefast_enabled", false);
+            prefast_dE_pred = meta.value("prefast_dE_pred", 0.0);
+            prefast_base_energy = meta.value("prefast_base_energy", current_E);
+            if (meta.contains("prefast_delta")) {
+                prefast_delta = sparse_descriptor_from_json(meta["prefast_delta"]);
+            }
         }
     } catch (...) {
         hastings_ratio = 1.0;
     }
     bool accept = Accept(current_E, E_final, temp, rng, hastings_ratio);
+    if (prefast && prefast->enabled() && meta_prefast_enabled && !prefast_delta.values.empty()) {
+        double dE_true_for_learning = E_final - prefast_base_energy;
+        prefast->update(prefast_delta, dE_true_for_learning);
+        prefast->append_learning_log(root / "prefast_learning.log",
+                                     mc_steps,
+                                     task_id,
+                                     prefast_dE_pred,
+                                     dE_true_for_learning,
+                                     accept);
+    }
     log << "STEP " << mc_steps
         << " proposal task_id=" << task_id
         << " move=" << move_type
@@ -1034,6 +1190,13 @@ int main(int argc, char** argv){
     struc.outputIntsiteHopNeighborMap("intsite_hop_neighbors.dat");
     struc.outputsave("SAVE");
 
+    PrefastModel prefast;
+    if (cfg.prefast.enabled) {
+        prefast.build(struc, cfg.prefast);
+        prefast.print_startup_log(std::cout);
+        prefast.write_basis_log(ROOT / "prefast_basis.log");
+    }
+
     std::ofstream log;
     if (cfg.continue_run) {
         log.open("mc.log", std::ios::app);
@@ -1057,6 +1220,18 @@ int main(int argc, char** argv){
         << " interstitial_site_cutoff=" << cfg.interstitial_site_cutoff
         << " resume_state=" << (cfg.resume_state_dir.empty() ? "<none>" : cfg.resume_state_dir)
         << " continue=" << (cfg.continue_run ? "true" : "false")
+        << " prefast=" << (cfg.prefast.enabled ? "on" : "off")
+        << " prefast_candidates_per_slot=" << cfg.prefast.candidates_per_slot
+        << " prefast_basis=" << cfg.prefast.basis
+        << " prefast_nshells=" << cfg.prefast.nshells
+        << " prefast_peak_scan_cutoff=" << cfg.prefast.peak_scan_cutoff
+        << " prefast_peak_tol=" << cfg.prefast.peak_tol
+        << " prefast_sigma_small=" << cfg.prefast.sigma_small
+        << " prefast_sigma_large=" << cfg.prefast.sigma_large
+        << " prefast_cutoff_margin=" << cfg.prefast.cutoff_margin
+        << " prefast_learning_rate=" << cfg.prefast.learning_rate
+        << " prefast_lms_epsilon=" << cfg.prefast.lms_epsilon
+        << " prefast_weight_decay=" << cfg.prefast.weight_decay
         << "\n";
 
     bool have_state = false;
@@ -1126,6 +1301,7 @@ int main(int argc, char** argv){
                 mc_steps, accept_count,
                 cfg.mode, cfg.interstitial_site_cutoff,
                 cfg.temp, rng, log,
+                &prefast,
                 &accepted_state_changed
             );
             if (ok) processed_any = true;
@@ -1152,7 +1328,7 @@ int main(int argc, char** argv){
 
                 fs::path gof = ROOT / "fast" / (".go_" + std::to_string(k));
                 if (fs::exists(gof)) continue;  // slot is busy
-                if (generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP)) {
+                if (generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP, &prefast, current_E)) {
                     processed_any = true;
                     cout << "generating candidate for worker #" << k << " successfully" << endl;
                 }

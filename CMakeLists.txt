@@ -13,6 +13,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_executable(mc_paipai
     src/constants.cpp
     src/mcpaipai.cpp
+    src/prefast.cpp
     src/element.cpp
     src/structure.cpp
 )
