@@ -40,6 +40,21 @@ Recommended for:
 
 ---
 
+## Prefast development version (`v2.1-dev`)
+
+The `v2.1-dev` branch is based on `v2.0-dev` and adds the first prefast trial-ranking workflow.
+
+Major updates include:
+- reference-lattice double-zeta radial basis descriptor for prefast trial ranking
+- mini-batch trial proposal ordering before fast-worker screening
+- online normalized-LMS learning from slow-worker relaxed energies
+- startup basis diagnostics in `prefast_basis.log`
+- learning diagnostics in `prefast_learning.log`
+
+The prefast model is used only to prioritize which trial configurations are sent to fast workers. Final Monte Carlo acceptance still uses the exact MLIP-relaxed energy returned by the slow worker.
+
+---
+
 ## Development version (`v2.0-dev`)
 
 The `v2.0-dev` branch contains the new PAIPAI v2.0 framework.
@@ -128,7 +143,13 @@ git clone https://github.com/siyazhu/PAIPAI.git
 cd PAIPAI
 ```
 
-To use the development version:
+To use the prefast development version:
+
+```bash
+git checkout v2.1-dev
+```
+
+To use the v2.0 development version:
 
 ```bash
 git checkout v2.0-dev
@@ -136,7 +157,7 @@ git checkout v2.0-dev
 
 ---
 
-# Build and Install (PAIPAI v2.0)
+# Build and Install (PAIPAI v2.0/v2.1)
 
 ```bash
 mkdir build
@@ -383,6 +404,85 @@ for example GPU submission scripts.
 | `--intsite-neighbor-cutoff X` | Cutoff for interstitial-site neighbor mapping |
 | `--intsite-hop-cutoff X` | Cutoff for the local interstitial-hop neighbor graph |
 | `--interstitial-site-cutoff X` | Maximum distance for assigning a relaxed interstitial atom to a reference site |
+
+---
+
+# Prefast options (`v2.1-dev`)
+
+Prefast is an optional adaptive trial-ranking layer in `search` mode. When enabled, PAIPAI generates a small mini-batch of trial moves for each free fast-worker slot, predicts each trial energy change using a reference-lattice descriptor, and sends the lowest predicted trial to the fast worker.
+
+Prefast does not replace MLIP relaxation and does not change final Metropolis acceptance. Slow-worker relaxed energies remain the source of truth.
+
+| Option | Description |
+|---|---|
+| `--prefast on|off` | Enable or disable prefast trial ranking |
+| `--prefast-candidates-per-slot N` | Number of trial moves generated and ranked for each free fast-worker slot |
+| `--prefast-basis ref-dz` | Use the reference-lattice double-zeta radial basis descriptor |
+| `--prefast-nshells N` | Number of detected reference distance shells per site-pair family |
+| `--prefast-peak-scan-cutoff X` | Maximum reference pair distance used to detect shell peaks |
+| `--prefast-peak-tol X` | Distance tolerance for clustering reference pair distances into shells |
+| `--prefast-sigma-small X` | Narrow Gaussian width for each shell center |
+| `--prefast-sigma-large X` | Broad Gaussian width for each shell center |
+| `--prefast-cutoff-margin X` | Margin added after the last detected shell for the cosine cutoff |
+| `--prefast-learning-rate X` | Normalized-LMS learning rate |
+| `--prefast-lms-epsilon X` | Small denominator stabilizer for normalized LMS |
+| `--prefast-weight-decay X` | Optional weight decay applied during online learning |
+
+Example:
+
+```bash
+paipai struc.in \
+  --mode search \
+  --prefast on \
+  --prefast-candidates-per-slot 6 \
+  --steps 10000
+```
+
+---
+
+# Major Updates in v2.1
+
+## 1. Prefast trial ranking before fast-worker screening
+
+PAIPAI v2.1-dev adds an optional prefast model that ranks trial moves before they are sent to fast workers.
+
+For each free fast-worker slot:
+- the master reads the current accepted `SAVE`
+- it generates a small mini-batch of candidate trial moves
+- each candidate is scored by a reference-lattice descriptor and the current adaptive weights
+- only the lowest predicted candidate is sent to the fast worker
+
+This avoids adding a long-lived prefast waiting pool while still allowing prefast to prioritize fast-worker effort.
+
+## 2. Reference-lattice double-zeta radial descriptor
+
+The prefast descriptor is built from the fixed PAIPAI reference site graph, not from relaxed `CONTCAR` coordinates.
+
+At startup, PAIPAI:
+- builds a reference pair list using minimum-image distances under PBC
+- separates site pairs into `MM`, `MI`, and `II` families
+- detects distance-shell peaks for each family
+- places two Gaussian basis functions at each shell center
+- applies a cosine cutoff after the last selected shell
+
+Occupied element pairs define descriptor channels. Empty interstitial sites contribute zero and are not treated as a real element channel.
+
+## 3. Online learning and diagnostics
+
+The adaptive model predicts:
+
+```text
+Delta E_pred = w dot Delta D
+```
+
+After the slow worker returns the relaxed energy, the master updates `w` using normalized LMS. Final MC acceptance still uses the true slow-worker relaxed energy.
+
+Diagnostics are written to:
+
+```text
+prefast_basis.log
+prefast_learning.log
+```
 
 ---
 
