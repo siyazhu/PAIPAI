@@ -1060,13 +1060,20 @@ bool process_report_file(const fs::path& root,
     bool accept = Accept(current_E, E_final, temp, rng, hastings_ratio);
     if (prefast && prefast->enabled() && meta_prefast_enabled && !prefast_delta.values.empty()) {
         double dE_true_for_learning = E_final - prefast_base_energy;
-        prefast->update(prefast_delta, dE_true_for_learning);
+        auto update_stats = prefast->update(prefast_delta, dE_true_for_learning);
         prefast->append_learning_log(root / "prefast_learning.log",
                                      mc_steps,
                                      task_id,
                                      prefast_dE_pred,
-                                     dE_true_for_learning,
+                                     update_stats,
                                      accept);
+        prefast->append_weight_update_log(root / "prefast_weight_updates.log",
+                                          mc_steps,
+                                          task_id,
+                                          update_stats);
+        prefast->append_weight_snapshot_log(root / "prefast_weights.log",
+                                            mc_steps,
+                                            task_id);
     }
     log << "STEP " << mc_steps
         << " proposal task_id=" << task_id

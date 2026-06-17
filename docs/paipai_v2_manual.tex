@@ -1,0 +1,926 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{listings}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  urlcolor=blue!60!black,
+  citecolor=blue!60!black
+}
+
+\lstdefinestyle{paipai}{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  rulecolor=\color{black!20},
+  backgroundcolor=\color{black!3}
+}
+\lstset{style=paipai}
+
+\newcommand{\PAIPAI}{\textsc{PAIPAI}}
+\newcommand{\MLIP}{\textsc{MLIP}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\kB}{k_{\mathrm{B}}}
+
+\title{\PAIPAI{} Technical Manual: Principles, v2.0 Workflow, and v2.1 Prefast Trial Ranking}
+\author{PAIPAI Development Notes}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\PAIPAI{} is a Monte Carlo framework for exploring chemically disordered metallic structures with interstitial solutes, vacancies, grain boundaries, slabs, and other defects using machine-learning interatomic potentials.
+This document explains the scientific model behind \PAIPAI{}, the evolution from the stable \texttt{main} branch to \texttt{v2.0-dev} and \texttt{v2.1-dev}, and the practical workflow for generating input structures, launching simulations, interpreting output files, and using the new prefast trial-ranking model.
+The v2.1 prefast model is an adaptive proposal-ordering layer only: it prioritizes which trial structures are sent to fast workers, but the final Monte Carlo acceptance criterion remains based on the true relaxed energy returned by the slow worker.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Scope and Version Map}
+
+\PAIPAI{} has three important development levels:
+
+\begin{description}[leftmargin=2.8cm,style=nextline]
+\item[\texttt{main}]
+The original stable implementation. It is useful for reproducing older calculations and for conservative production workflows.
+
+\item[\texttt{v2.0-dev}]
+The redesigned workflow. It introduces explicit separation between reference occupation states and relaxed structures, the \texttt{search} and \texttt{finiteT} modes, persistent fast and slow Python workers, GPU-capable MLIP relaxation, resume/continue logic, interstitial-site reconciliation, \texttt{findinter}, and analysis utilities.
+
+\item[\texttt{v2.1-dev}]
+The v2.0 framework plus an optional prefast model. Prefast builds a reference-lattice radial descriptor, learns an online linear energy-change predictor, and uses it to rank trial moves before fast-worker screening.
+\end{description}
+
+The recommended development branch for the features described in this manual is:
+
+\begin{lstlisting}[language=bash]
+git checkout v2.1-dev
+\end{lstlisting}
+
+\section{Scientific Motivation}
+
+\subsection{Configurational Search in Alloy--Interstitial Systems}
+
+High-entropy alloys and chemically complex defect structures have an enormous number of possible configurations.
+A metal sublattice may contain many metallic elements, while interstitial candidate sites may be empty or occupied by light solutes such as B, C, N, O, or H.
+The central problem is to sample or search the discrete occupation space while still evaluating energies after local atomic relaxation.
+
+\PAIPAI{} defines a Monte Carlo state by site occupations on a reference structure:
+
+\begin{itemize}
+  \item each metal reference site has a metallic species label;
+  \item each interstitial candidate site has either an interstitial species label or an empty state;
+  \item the relaxed Cartesian coordinates are used for energy evaluation and coordinate seeding, but they do not replace the discrete state definition.
+\end{itemize}
+
+This distinction is essential. The Monte Carlo state is discrete, but the energy associated with that state is the energy after MLIP relaxation.
+
+\subsection{Energy Model}
+
+For a discrete occupation state $s$, \PAIPAI{} constructs an atomic structure and relaxes it with a machine-learning interatomic potential.
+The state energy is therefore
+
+\begin{equation}
+  E(s) = \min_{\mathbf{R}} E_{\mathrm{MLIP}}(\mathbf{R}; s),
+\end{equation}
+
+where $\mathbf{R}$ denotes the relaxed atomic coordinates compatible with the site occupations.
+In practice, the minimization is performed by Python workers using MaterialsFramework and a model such as \texttt{GRACE-2L-OMAT}.
+
+\subsection{Monte Carlo Acceptance}
+
+For an ordinary symmetric proposal, the Metropolis acceptance probability is
+
+\begin{equation}
+  A(s \rightarrow s') =
+  \min\left[
+    1,
+    \exp\left(-\frac{E(s') - E(s)}{\kB T}\right)
+  \right].
+\end{equation}
+
+For proposals with asymmetric forward and reverse proposal counts, \PAIPAI{} includes a Hastings ratio:
+
+\begin{equation}
+  A(s \rightarrow s') =
+  \min\left[
+    1,
+    \exp\left(-\frac{E(s') - E(s)}{\kB T}\right)
+    \frac{q(s' \rightarrow s)}{q(s \rightarrow s')}
+  \right].
+\end{equation}
+
+For local interstitial hops, the implementation stores a ratio based on the number of valid forward and reverse hop edges.
+The current C++ master writes this value as \texttt{hastings\_ratio} in task metadata and uses it in the final acceptance calculation.
+
+\section{Reference States, Relaxed States, and Files}
+
+\subsection{Why v2.0 Separates Reference and Relaxed Structures}
+
+The original stable workflow was simpler, but it could blur two concepts:
+
+\begin{enumerate}
+  \item the reference site occupation state used by Monte Carlo;
+  \item the relaxed physical coordinates returned by MLIP relaxation.
+\end{enumerate}
+
+In v2.0, \PAIPAI{} keeps these objects separate. This is especially important for interstitials, because a relaxed interstitial atom may move away from the ideal reference site. The state used by Monte Carlo is still a site occupation, not an arbitrary relaxed coordinate.
+
+\subsection{Core Runtime Files}
+
+\begin{longtable}{>{\ttfamily}p{0.22\linewidth}p{0.70\linewidth}}
+\toprule
+File or directory & Meaning \\
+\midrule
+\endhead
+SAVE & The current accepted discrete reference state: lattice vectors, fixed site order, metal occupations, and interstitial-site occupations. \\
+REFERENCE\_SAVE & The reference state used to launch a specific relaxation task. It records the pre-relaxation trial state. \\
+CONTCAR & The relaxed physical coordinates from the MLIP worker. It is used to seed later trial structures. \\
+fast/ & Slot-based input area for fast workers: \texttt{POSCARk}, \texttt{SAVEk}, \texttt{METAk}, and \texttt{.go\_k}. \\
+waiting\_pool/ & Pool of screened candidates waiting for slow refinement. Slow workers select low \texttt{energy\_screen} tasks first. \\
+waiting\_work/ & Claimed slow-worker jobs. \\
+refine\_outbox/ & Slow-worker outputs, including relaxed \texttt{CONTCAR}, pass-through \texttt{SAVE}, \texttt{energy}, and updated \texttt{meta.json}. \\
+reports/ & Lightweight reports consumed by the C++ master. \\
+mcprocess/ & Accepted MC states archived as numbered directories. \\
+counters/ & Runtime counters such as \texttt{fast\_count}, \texttt{slow\_count}, and \texttt{mc\_count}. \\
+mc.log & Main Monte Carlo log. \\
+\bottomrule
+\end{longtable}
+
+\subsection{SAVE Format}
+
+The v2 \texttt{SAVE} format stores fixed site ordering.
+Metal site lines include a fourth column with \texttt{atomtype[i]}.
+Interstitial site lines include a fourth column with \texttt{interstitial\_postype[i]}, where $-1$ means empty.
+
+This design allows:
+
+\begin{itemize}
+  \item reference-site identity to remain stable;
+  \item metal occupations to be swapped without reordering sites;
+  \item empty interstitial sites to remain explicit candidate sites;
+  \item trial and relaxed structures to be reconciled after MLIP relaxation.
+\end{itemize}
+
+\section{Version Evolution}
+
+\subsection{\texttt{main}: Stable Original Workflow}
+
+The \texttt{main} branch contains the original stable implementation.
+It is suitable when exact reproducibility of earlier PAIPAI calculations is more important than using the newer workflow.
+The original design already combined Monte Carlo moves with MLIP relaxation, but it did not contain the full v2 reference-state bookkeeping, finite-temperature chain discipline, resume/continue workflow, \texttt{findinter} utility, post-processing tools, or v2.1 prefast ranking layer.
+
+\subsection{\texttt{v2.0-dev}: Reference-State and Worker Redesign}
+
+The v2.0 branch introduces the current architecture:
+
+\begin{itemize}
+  \item persistent fast and slow workers;
+  \item \texttt{search} and \texttt{finiteT} modes;
+  \item explicit \texttt{SAVE}/\texttt{REFERENCE\_SAVE}/\texttt{CONTCAR} separation;
+  \item relaxed coordinate seeding for new trials;
+  \item interstitial-site reconciliation after slow relaxation;
+  \item local interstitial hop proposals with Hastings correction;
+  \item optional cluster interstitial moves;
+  \item GPU-capable worker launch scripts;
+  \item resume and continue support;
+  \item input generation and analysis utilities.
+\end{itemize}
+
+\subsection{\texttt{v2.1-dev}: Prefast Trial Ranking}
+
+The v2.1 branch adds the prefast model.
+Prefast is placed before the fast worker:
+
+\begin{enumerate}
+  \item the master reads the current accepted \texttt{SAVE};
+  \item for each free fast-worker slot, it generates a mini-batch of trial moves;
+  \item it computes a reference-lattice descriptor change $\Delta D$ for each trial;
+  \item it predicts $\Delta E_{\mathrm{pred}} = \mathbf{w}\cdot\Delta D$;
+  \item it sends only the lowest predicted candidate to the fast worker;
+  \item the fast worker performs coarse relaxation and inserts the result into \texttt{waiting\_pool};
+  \item the slow worker performs accurate refinement;
+  \item the master accepts or rejects using the true slow-worker relaxed energy;
+  \item the master updates $\mathbf{w}$ using the true relaxed energy change.
+\end{enumerate}
+
+Prefast changes prioritization, not the physical energy model and not the final acceptance rule.
+
+\section{Monte Carlo Move Types}
+
+\subsection{Metal Swaps}
+
+A metal swap exchanges the species labels of two metal reference sites.
+The number of each metallic element is conserved.
+The proposal is skipped if no unlike metal pair is available.
+
+\subsection{Interstitial Swaps}
+
+An interstitial swap exchanges the occupation labels of two interstitial candidate sites.
+This supports occupied--empty swaps and different-species interstitial swaps.
+The total number of each interstitial species is conserved.
+
+\subsection{Local Interstitial Hops}
+
+The local hop move uses a cached interstitial-site neighbor graph.
+A valid edge is a neighboring interstitial-site pair with different current occupations.
+The proposal is selected uniformly from valid edges.
+
+Because the number of valid edges can change after a move, the finite-temperature acceptance rule includes the Hastings correction:
+
+\begin{equation}
+  h = \frac{N_{\mathrm{forward}}}{N_{\mathrm{reverse}}}.
+\end{equation}
+
+This value is recorded in task metadata.
+
+\subsection{Cluster Interstitial Swaps}
+
+A cluster interstitial move first swaps two interstitial occupations.
+Then it collects the metal sites neighboring either interstitial site and randomly shuffles the metal species among that local union.
+This move is useful for local chemical relaxation around interstitial rearrangements, but it should be used carefully in finite-temperature studies because it is a larger proposal.
+
+\subsection{Exchange Moves}
+
+The C++ structure class contains exchange routines for metal and interstitial occupations.
+The current launcher exposes weights for exchange moves, but the main random-move logic leaves these branches as future extensions.
+
+\section{Search Mode and Finite-Temperature Mode}
+
+\subsection{Search Mode}
+
+\texttt{search} mode is intended for efficient structure search.
+It uses fast workers for coarse screening and slow workers for accurate refinement.
+The waiting pool is sorted by \texttt{energy\_screen}, so lower screened-energy candidates are refined first.
+
+Search mode allows relaxed interstitial atoms to be reassigned to nearby candidate sites after slow relaxation.
+If reassignment occurs, \PAIPAI{} rewrites the accepted \texttt{SAVE} and task \texttt{CONTCAR} so that the discrete state and atom ordering remain consistent.
+
+\subsection{Finite-Temperature Mode}
+
+\texttt{finiteT} mode is designed for proper sequential Markov-chain sampling.
+It submits one proposal at a time and processes it before generating the next proposal.
+This preserves a clear current-state-to-trial-state Markov chain.
+
+In \texttt{finiteT}, relaxed interstitial hopping is rejected.
+If a relaxed interstitial atom maps to a different site than the trial reference state, the move is rejected and \texttt{mc.log} records \texttt{REJECT\_INTERSTITIAL\_HOP}.
+
+\section{The v2.1 Prefast Model}
+
+\subsection{Purpose}
+
+Fast-worker relaxation is cheaper than slow-worker refinement, but it is still not free.
+Prefast adds a very cheap adaptive ranking step before fast-worker screening.
+The goal is to avoid spending fast-worker time on obviously poor trial moves when several alternatives are available.
+
+\subsection{Reference Pair Graph}
+
+At startup, prefast builds a fixed pair list from the reference site geometry.
+For sites $i$ and $j$, it computes the minimum-image reference distance $r^0_{ij}$ under periodic boundary conditions.
+The pair is retained if
+
+\begin{equation}
+  r^0_{ij} < r_{\mathrm{scan}},
+\end{equation}
+
+where $r_{\mathrm{scan}}$ is controlled by \texttt{--prefast-peak-scan-cutoff}.
+
+Each pair belongs to one family:
+
+\begin{equation}
+  \mathrm{family}(i,j) \in \{\mathrm{MM}, \mathrm{MI}, \mathrm{II}\},
+\end{equation}
+
+where M denotes a metal site and I denotes an interstitial candidate site.
+
+\subsection{Shell Detection}
+
+For each family, prefast sorts all retained reference distances and clusters them into distance shells.
+A new shell begins when the distance differs from the current shell center by more than \texttt{--prefast-peak-tol}.
+The first \texttt{--prefast-nshells} shell centers are used as Gaussian centers:
+
+\begin{equation}
+  \mu_{f,k}, \qquad f\in\{\mathrm{MM},\mathrm{MI},\mathrm{II}\}.
+\end{equation}
+
+The centers are derived from reference geometry, not from initial element-pair statistics.
+This matters because some element pairs may be absent in the initial configuration but can appear later through Monte Carlo moves.
+
+\subsection{Double-Zeta Radial Basis}
+
+For each shell center, prefast uses two Gaussian widths:
+
+\begin{align}
+  \sigma_{\mathrm{small}} &= \texttt{--prefast-sigma-small}, \\
+  \sigma_{\mathrm{large}} &= \texttt{--prefast-sigma-large}.
+\end{align}
+
+The basis value for pair distance $r$ is
+
+\begin{equation}
+  \phi_{f,k,\zeta}(r)
+  =
+  \exp\left[
+    -\frac{1}{2}
+    \left(\frac{r-\mu_{f,k}}{\sigma_{\zeta}}\right)^2
+  \right]
+  f_{\mathrm{cut}}(r).
+\end{equation}
+
+The narrow zeta captures sharp shell identity.
+The broad zeta provides robustness for distorted environments.
+
+\subsection{Cosine Cutoff}
+
+For each family, the cutoff is
+
+\begin{equation}
+  r_{c,f} = \mu_{f,\mathrm{last}} + r_{\mathrm{margin}},
+\end{equation}
+
+where $r_{\mathrm{margin}}$ is controlled by \texttt{--prefast-cutoff-margin}.
+The cutoff function is
+
+\begin{equation}
+  f_{\mathrm{cut}}(r)
+  =
+  \begin{cases}
+  \frac{1}{2}\left[\cos\left(\pi r/r_c\right)+1\right], & r < r_c,\\
+  0, & r \ge r_c.
+  \end{cases}
+\end{equation}
+
+\subsection{Descriptor Channels}
+
+Each descriptor feature is indexed by:
+
+\begin{itemize}
+  \item site-pair family: MM, MI, or II;
+  \item unordered element pair $\alpha\beta$;
+  \item shell index $k$;
+  \item zeta index: small or large.
+\end{itemize}
+
+The element-pair channel is canonicalized:
+
+\begin{equation}
+  D^{\alpha\beta} = D^{\beta\alpha}.
+\end{equation}
+
+Empty interstitial sites are not treated as an element.
+If either site in a pair is empty, that pair contributes zero.
+
+\subsection{Sparse Delta Descriptor}
+
+For a trial move from state $s$ to $s'$, prefast computes only the descriptor change:
+
+\begin{equation}
+  \Delta D = D(s') - D(s).
+\end{equation}
+
+Only pairs connected to changed sites can change.
+This makes two-site swaps and larger cluster moves efficient.
+The implementation stores $\Delta D$ sparsely in the trial metadata so the master can update weights after slow-worker results return.
+
+\subsection{Linear Predictor and Online Learning}
+
+Prefast predicts the relaxed energy change as
+
+\begin{equation}
+  \Delta E_{\mathrm{pred}} = \mathbf{w}\cdot\Delta D.
+\end{equation}
+
+After the slow worker returns the relaxed energy, the master computes a training target using the energy at trial generation time:
+
+\begin{equation}
+  \Delta E_{\mathrm{true}} = E_{\mathrm{final}} - E_{\mathrm{base}}.
+\end{equation}
+
+The weights are updated by normalized LMS:
+
+\begin{equation}
+  \mathbf{w}
+  \leftarrow
+  \mathbf{w}
+  +
+  \eta
+  \frac{\Delta E_{\mathrm{true}}-\Delta E_{\mathrm{pred}}}
+       {\epsilon + \|\Delta D\|^2}
+  \Delta D.
+\end{equation}
+
+Optional weight decay applies
+
+\begin{equation}
+  \mathbf{w} \leftarrow (1-\lambda)\mathbf{w}.
+\end{equation}
+
+\subsection{Why There Is No Prefast Waiting Pool in v2.1}
+
+The first implementation intentionally avoids a long-lived prefast waiting pool.
+Instead, for each free fast-worker slot the master generates a small mini-batch and immediately selects the best predicted candidate.
+This has several advantages:
+
+\begin{itemize}
+  \item it avoids unbounded disk growth;
+  \item candidates are always generated from the current accepted \texttt{SAVE};
+  \item the worker communication logic remains unchanged;
+  \item the feature can be disabled by setting \texttt{--prefast off};
+  \item \texttt{--prefast-candidates-per-slot 1} effectively removes prefast ranking pressure.
+\end{itemize}
+
+\section{Generating Initial Structures with \texttt{findinter}}
+
+\subsection{Input Requirements}
+
+\texttt{findinter} starts from a metal-only POSCAR.
+The user specifies interstitial species and the number of occupied interstitial atoms.
+The program then searches for candidate interstitial sites and writes a \PAIPAI{} \texttt{struc.in}.
+
+\subsection{Basic Example}
+
+\begin{lstlisting}[language=bash]
+findinter \
+  --input POSCAR_metal_only \
+  --inter B,O \
+  --internum 4,5 \
+  --gn 100 \
+  --min-void-factor 0.9 \
+  --max-void-factor 1.2 \
+  --output struc.in \
+  --site-poscar interstitial_sites.vasp
+\end{lstlisting}
+
+The first run may create \texttt{radii.dat} and exit.
+Inspect or edit the radii file, then rerun the same command.
+
+\subsection{Effective Radii}
+
+\texttt{radii.dat} contains effective hard-sphere radii:
+
+\begin{lstlisting}
+Nb 1.428
+Ta 1.428
+Ti 1.428
+Hf 1.428
+Interstitial 0.55
+\end{lstlisting}
+
+These are site-search parameters.
+They are not immutable tabulated atomic radii.
+
+\subsection{Grid Modes}
+
+Exactly one grid mode must be used:
+
+\begin{longtable}{>{\ttfamily}p{0.30\linewidth}p{0.62\linewidth}}
+\toprule
+Option & Meaning \\
+\midrule
+\endhead
+--gn N & Use the same grid count along $x$, $y$, and $z$. \\
+--gnx N --gny N --gnz N & Use explicit grid counts along each lattice direction. All three must be provided. \\
+--gstep X & Derive grid counts from an approximate Cartesian grid step in Angstrom. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Site Selection Algorithm}
+
+\texttt{findinter} scans fractional grid points.
+For each grid point, it computes the nearest metal distance under periodic boundary conditions.
+A point is retained if
+
+\begin{align}
+  d_{\mathrm{nearest}} &\ge
+  f_{\min}(r_{\mathrm{metal}} + r_{\mathrm{interstitial}}),\\
+  d_{\mathrm{nearest}} &\le
+  f_{\max}(r_{\mathrm{metal}} + r_{\mathrm{interstitial}}).
+\end{align}
+
+The retained clearance field is searched for local maxima.
+After selecting one site, nearby grid points within
+
+\begin{equation}
+  2 r_{\mathrm{interstitial}} f_{\min}
+\end{equation}
+
+are suppressed.
+This prevents nearly overlapping selected sites while still allowing nearby maxima to appear after suppression.
+
+\section{Installation and Build}
+
+\subsection{Dependencies}
+
+The C++ programs require:
+
+\begin{itemize}
+  \item CMake;
+  \item a C++17 compiler;
+  \item Python 3;
+  \item MaterialsFramework and its MLIP dependencies for worker execution.
+\end{itemize}
+
+The Python environment should be able to run:
+
+\begin{lstlisting}[language=bash]
+python -c "import materialsframework"
+\end{lstlisting}
+
+\subsection{Build}
+
+\begin{lstlisting}[language=bash]
+git clone https://github.com/siyazhu/PAIPAI.git
+cd PAIPAI
+git checkout v2.1-dev
+
+mkdir build
+cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=$HOME
+cmake --build .
+cmake --install .
+\end{lstlisting}
+
+This installs:
+
+\begin{itemize}
+  \item \texttt{paipai};
+  \item \texttt{mc\_paipai};
+  \item \texttt{findinter};
+  \item \texttt{fast\_worker.py};
+  \item \texttt{slow\_worker.py};
+  \item analysis tools such as \texttt{warrencowley} and \texttt{packmc}.
+\end{itemize}
+
+\section{Running \PAIPAI{}}
+
+\subsection{Search Mode Example}
+
+\begin{lstlisting}[language=bash]
+paipai \
+  --input struc.in \
+  --mode search \
+  --device cpu \
+  --fast 15 \
+  --slow 15 \
+  --steps 2000 \
+  --temp 10 \
+  --p-swap-metal 70 \
+  --p-swap-inter 30 \
+  --p-cluster-inter 0
+\end{lstlisting}
+
+\subsection{Search Mode with Prefast}
+
+\begin{lstlisting}[language=bash]
+paipai \
+  --input struc.in \
+  --mode search \
+  --device cuda \
+  --ngpu 2 \
+  --fast 8 \
+  --slow 8 \
+  --steps 50000 \
+  --temp 10 \
+  --prefast on \
+  --prefast-candidates-per-slot 6 \
+  --prefast-nshells 3 \
+  --prefast-peak-scan-cutoff 6.0 \
+  --prefast-peak-tol 0.12 \
+  --prefast-sigma-small 0.10 \
+  --prefast-sigma-large 0.30 \
+  --prefast-learning-rate 0.01
+\end{lstlisting}
+
+\subsection{Finite-Temperature Example}
+
+\begin{lstlisting}[language=bash]
+paipai \
+  --input struc.in \
+  --mode finiteT \
+  --device cuda \
+  --ngpu 1 \
+  --fast 0 \
+  --slow 1 \
+  --steps 200000 \
+  --temp 700 \
+  --p-hop-inter 80 \
+  --p-swap-inter 20 \
+  --intsite-hop-cutoff 3.0
+\end{lstlisting}
+
+\subsection{Resume from Search into Finite Temperature}
+
+\begin{lstlisting}[language=bash]
+paipai \
+  --mode finiteT \
+  --resume-state search/mcprocess/000031 \
+  --temp 700 \
+  --device cuda \
+  --ngpu 1 \
+  --slow 1 \
+  --steps 200000
+\end{lstlisting}
+
+If the resume target is an \texttt{mcprocess} directory, \PAIPAI{} selects the latest numbered child directory:
+
+\begin{lstlisting}[language=bash]
+paipai --mode finiteT --resume-state search/mcprocess --temp 700
+\end{lstlisting}
+
+\subsection{Continue an Interrupted Run}
+
+\begin{lstlisting}[language=bash]
+paipai --mode search --continue --steps 300000
+paipai --mode finiteT --continue --steps 20000
+\end{lstlisting}
+
+\texttt{--continue} reads the latest accepted state from \texttt{mcprocess/}, restores \texttt{SAVE} and \texttt{CONTCAR}, keeps existing queues and counters, appends to \texttt{mc.log}, and continues until the requested step budget is reached.
+
+\section{Command Reference}
+
+\subsection{Launcher Options}
+
+\begin{longtable}{>{\ttfamily}p{0.33\linewidth}p{0.59\linewidth}}
+\toprule
+Option & Meaning \\
+\midrule
+\endhead
+-i, --input FILE & Initial structure file. Default: \texttt{struc.in}. Not required with \texttt{--resume-state}. \\
+--mode MODE & \texttt{search} or \texttt{finiteT}. \\
+--model NAME & MLIP model name. Default: \texttt{GRACE-2L-OMAT}. \\
+--device DEV & \texttt{cpu} or \texttt{cuda}. \\
+--ngpu N & Number of GPUs used for round-robin worker assignment. \\
+--root DIR & Working directory. \\
+--resume-state DIR & Start finiteT from a saved state directory, or from the latest numbered child if DIR is \texttt{mcprocess}. \\
+--fast N & Number of fast workers in search mode. \\
+--slow N & Number of slow workers. \\
+--pool-cap N & Capacity of \texttt{waiting\_pool}. \\
+--fmax-screen X & Fast-worker force tolerance. \\
+--max-steps-screen N & Fast-worker maximum relaxation steps. \\
+--fmax-refine X & Slow-worker force tolerance. \\
+--max-steps-refine N & Slow-worker maximum relaxation steps. \\
+--steps N & Search budget in fast-screened structures or finiteT budget in processed proposals. \\
+--temp T & Monte Carlo temperature. \\
+--p-swap-metal N & Weight for metal swap moves. \\
+--p-swap-inter N & Weight for interstitial swap moves. \\
+--p-hop-inter N & Weight for local interstitial hop moves. \\
+--p-cluster-inter N & Weight for cluster interstitial moves. \\
+--p-exch-metal N & Reserved weight for metal exchange moves. \\
+--p-exch-inter N & Reserved weight for interstitial exchange moves. \\
+--intsite-neighbor-cutoff X & Cutoff for interstitial-site metal-neighbor map. \\
+--intsite-hop-cutoff X & Cutoff for local interstitial-hop graph. \\
+--interstitial-site-cutoff X & Maximum relaxed interstitial assignment distance. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Prefast Options}
+
+\begin{longtable}{>{\ttfamily}p{0.34\linewidth}p{0.58\linewidth}}
+\toprule
+Option & Meaning \\
+\midrule
+\endhead
+--prefast on|off & Enable or disable prefast trial ranking. \\
+--prefast-candidates-per-slot N & Number of trial candidates generated for each free fast-worker slot. \\
+--prefast-basis ref-dz & Use the reference-lattice double-zeta radial basis. \\
+--prefast-nshells N & Number of detected shells per site-pair family. \\
+--prefast-peak-scan-cutoff X & Maximum reference pair distance used in shell detection. \\
+--prefast-peak-tol X & Distance tolerance for shell clustering. \\
+--prefast-sigma-small X & Narrow Gaussian width. \\
+--prefast-sigma-large X & Broad Gaussian width. \\
+--prefast-cutoff-margin X & Margin after the last shell center for the cosine cutoff. \\
+--prefast-learning-rate X & Normalized-LMS learning rate. \\
+--prefast-lms-epsilon X & Small denominator stabilizer. \\
+--prefast-weight-decay X & Optional weight decay. \\
+\bottomrule
+\end{longtable}
+
+\subsection{\texttt{findinter} Options}
+
+\begin{longtable}{>{\ttfamily}p{0.34\linewidth}p{0.58\linewidth}}
+\toprule
+Option & Meaning \\
+\midrule
+\endhead
+--input POSCAR & Metal-only input POSCAR. \\
+--inter B,O & Comma-separated interstitial species. \\
+--internum 4,5 & Number of occupied interstitial atoms for each species. \\
+--output FILE & Output \PAIPAI{} structure file. \\
+--site-poscar FILE & Optional visualization POSCAR with candidate sites marked by H atoms. \\
+--radii FILE & Effective radii file. Default: \texttt{radii.dat}. \\
+--gn N & Uniform grid count. \\
+--gnx N --gny N --gnz N & Explicit grid counts. \\
+--gstep X & Target Cartesian grid spacing. \\
+--max-sites N & Maximum number of candidate sites to write. Zero means no limit. \\
+--min-void-factor X & Lower nearest-metal distance factor. \\
+--max-void-factor X & Upper nearest-metal distance factor. \\
+--merge-distance X & Optional extra merge distance for nearly duplicate sites. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Analysis Tool Options}
+
+\begin{longtable}{>{\ttfamily}p{0.34\linewidth}p{0.58\linewidth}}
+\toprule
+Tool and option & Meaning \\
+\midrule
+\endhead
+warrencowley --root DIR & Root directory containing \texttt{mcprocess}. \\
+warrencowley --inter-metal-cutoff R & Compute interstitial-metal Warren--Cowley parameters. \\
+warrencowley --metal-metal-cutoff R & Compute metal-metal Warren--Cowley parameters. \\
+warrencowley --ref & Use saved reference lattice and occupations rather than relaxed \texttt{CONTCAR}. \\
+warrencowley --output FILE & Output filename inside each accepted state directory. \\
+packmc --root DIR & Root directory containing \texttt{mcprocess}. \\
+packmc --output FILE & Summary TSV output. \\
+packmc --contcar-dir DIR & Directory for collected \texttt{CONTCAR} files. \\
+packmc --tar FILE & Tar archive output for collected \texttt{CONTCAR} files. \\
+\bottomrule
+\end{longtable}
+
+\section{Example Run Scripts}
+
+\subsection{CPU Search Script}
+
+\begin{lstlisting}[language=bash]
+#!/usr/bin/env bash
+set -euo pipefail
+
+paipai \
+  --input struc.in \
+  --mode search \
+  --root search_cpu \
+  --device cpu \
+  --fast 8 \
+  --slow 8 \
+  --steps 20000 \
+  --temp 10 \
+  --fmax-screen 0.10 \
+  --max-steps-screen 30 \
+  --fmax-refine 0.01 \
+  --max-steps-refine 400 \
+  --p-swap-metal 70 \
+  --p-swap-inter 30
+\end{lstlisting}
+
+\subsection{GPU Search with Prefast}
+
+\begin{lstlisting}[language=bash]
+#!/usr/bin/env bash
+set -euo pipefail
+
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+
+paipai \
+  --input struc.in \
+  --mode search \
+  --root search_prefast \
+  --device cuda \
+  --ngpu 2 \
+  --fast 8 \
+  --slow 8 \
+  --pool-cap 128 \
+  --steps 100000 \
+  --temp 10 \
+  --prefast on \
+  --prefast-candidates-per-slot 6
+\end{lstlisting}
+
+\subsection{Finite-Temperature Production Script}
+
+\begin{lstlisting}[language=bash]
+#!/usr/bin/env bash
+set -euo pipefail
+
+paipai \
+  --mode finiteT \
+  --resume-state search_prefast/mcprocess \
+  --root finiteT_700 \
+  --device cuda \
+  --ngpu 1 \
+  --slow 1 \
+  --steps 200000 \
+  --temp 700 \
+  --p-hop-inter 80 \
+  --p-swap-inter 20 \
+  --intsite-hop-cutoff 3.0 \
+  --fmax-refine 0.01 \
+  --max-steps-refine 400
+\end{lstlisting}
+
+\section{Diagnostics and Output Interpretation}
+
+\subsection{Main Logs}
+
+\begin{description}[leftmargin=3cm,style=nextline]
+\item[\texttt{mc.log}]
+Records accepted/rejected MC steps, energies, move types, Hastings ratios, resume events, and rejection reasons.
+
+\item[\texttt{fast\_*.log}]
+Fast-worker logs with coarse relaxation information.
+
+\item[\texttt{slow\_*.log}]
+Slow-worker logs with refinement information.
+
+\item[\texttt{meta.json}]
+Per-task metadata. In v2.1, prefast-selected tasks include fields such as \texttt{prefast\_dE\_pred}, \texttt{prefast\_norm\_dD}, and \texttt{prefast\_delta}.
+\end{description}
+
+\subsection{Prefast Logs}
+
+\begin{description}[leftmargin=3.2cm,style=nextline]
+\item[\texttt{prefast\_basis.log}]
+Contains site-pair family, shell index, shell center, Gaussian widths, cutoff, and number of reference pairs in each shell.
+
+\item[\texttt{prefast\_learning.log}]
+Contains online learning diagnostics: MC step, trial id, predicted energy change at proposal time, current predicted energy change at update time, true energy change, both errors, descriptor norm, number of active features, learning rate, update scale, weight norm before and after the update, maximum absolute weight, and accepted/rejected label.
+
+\item[\texttt{prefast\_weight\_updates.log}]
+Contains one row per changed feature weight during each learning update. The columns include step, trial id, feature index, feature name, descriptor value, weight before update, weight after update, and the weight increment.
+
+\item[\texttt{prefast\_weights.log}]
+Contains a complete snapshot of the learned weight vector after each learning update. It is written in long TSV format with one row per feature: step, trial id, feature index, feature name, and current weight. This file can become large because every feature is written at every update.
+\end{description}
+
+\subsection{Accepted-State Archive}
+
+Each accepted state under \texttt{mcprocess/000001}, \texttt{mcprocess/000002}, and so on contains:
+
+\begin{itemize}
+  \item \texttt{SAVE};
+  \item \texttt{CONTCAR};
+  \item \texttt{REFERENCE\_SAVE};
+  \item \texttt{meta.json};
+  \item \texttt{info.txt}.
+\end{itemize}
+
+\section{Recommended Workflows}
+
+\subsection{Ground-State Search}
+
+\begin{enumerate}
+  \item Generate \texttt{struc.in} using \texttt{findinter}.
+  \item Run \texttt{search} mode with several fast and slow workers.
+  \item Enable prefast in v2.1 if fast-worker cost is significant.
+  \item Inspect low-energy accepted states in \texttt{mcprocess/}.
+  \item Use \texttt{packmc} and \texttt{warrencowley} for analysis.
+\end{enumerate}
+
+\subsection{Finite-Temperature Sampling}
+
+\begin{enumerate}
+  \item Start from a reasonable relaxed state, often from a search run.
+  \item Use \texttt{--resume-state} to launch \texttt{finiteT}.
+  \item Use one slow worker to preserve sequential chain behavior.
+  \item Choose move weights that fit the physical diffusion or sampling mechanism of interest.
+  \item Monitor \texttt{mc.log} for acceptance rates and rejected interstitial hops.
+\end{enumerate}
+
+\subsection{Prefast Parameter Guidelines}
+
+\begin{itemize}
+  \item Start with \texttt{--prefast-candidates-per-slot 4} or \texttt{6}.
+  \item Keep \texttt{--prefast-nshells 3} unless the reference structure has a very unusual local geometry.
+  \item Use \texttt{--prefast-peak-tol 0.10--0.15} Angstrom for distorted structures.
+  \item The default Gaussian widths, $0.10$ and $0.30$ Angstrom, are intended to balance shell specificity and robustness.
+  \item If learning is unstable, reduce \texttt{--prefast-learning-rate}.
+  \item If weights grow too aggressively, try a small \texttt{--prefast-weight-decay}, such as $10^{-5}$.
+\end{itemize}
+
+\section{Current Limitations and Future Extensions}
+
+\begin{itemize}
+  \item Prefast weights are currently learned within a run; persistent weight checkpointing is a natural future extension.
+  \item The v2.1 prefast implementation uses mini-batch per-slot ranking rather than a long-lived prefast pool.
+  \item Exchange moves are exposed in the option surface but remain future extensions in the current random-move dispatcher.
+  \item \texttt{findinter} is a practical grid-based site generator, not a full Voronoi or global packing solver.
+  \item Finite-temperature simulations require careful relaxation settings; overly loose relaxation may distort thermodynamic sampling.
+\end{itemize}
+
+\section{Citation}
+
+If you use \PAIPAI{} in academic work, cite the associated publication:
+
+\begin{quote}
+S. Zhu and R. Arroyave,
+``Ground-state structure search of defective high-entropy alloys using machine-learning potentials and Monte Carlo sampling,''
+\emph{Computational Materials Science} 270 (2026) 114752.
+\end{quote}
+
+\end{document}

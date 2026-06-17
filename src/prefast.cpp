@@ -140,6 +140,20 @@ double cosine_cutoff(double r, double cutoff)
     return 0.5 * (std::cos(kPi * r / cutoff) + 1.0);
 }
 
+double vector_norm2(const std::vector<double>& v)
+{
+    double out = 0.0;
+    for (double x : v) out += x * x;
+    return out;
+}
+
+double max_abs_value(const std::vector<double>& v)
+{
+    double out = 0.0;
+    for (double x : v) out = std::max(out, std::fabs(x));
+    return out;
+}
+
 } // namespace
 
 double SparseDescriptor::norm2() const
@@ -360,12 +374,26 @@ TrialScore PrefastModel::score(const Structure& before, const Structure& after)
     return ts;
 }
 
-void PrefastModel::update(const SparseDescriptor& delta, double dE_true)
+PrefastUpdateStats PrefastModel::update(const SparseDescriptor& delta, double dE_true)
 {
-    if (!enabled()) return;
+    PrefastUpdateStats stats;
+    stats.dE_true = dE_true;
+    stats.learning_rate = config_.learning_rate;
+    stats.weight_decay = config_.weight_decay;
+    stats.n_active_features = (int)delta.values.size();
+    stats.n_total_features = (int)weights_.size();
+    if (!enabled()) return stats;
+
     double pred = predict(delta);
     double err = dE_true - pred;
     double norm2 = delta.norm2();
+
+    stats.dE_pred_current = pred;
+    stats.error_current = err;
+    stats.norm2_dD = norm2;
+    stats.norm_dD = std::sqrt(norm2);
+    stats.weight_norm_before = std::sqrt(vector_norm2(weights_));
+    stats.max_abs_weight_before = max_abs_value(weights_);
 
     if (config_.weight_decay > 0.0) {
         double factor = std::max(0.0, 1.0 - config_.weight_decay);
@@ -373,18 +401,43 @@ void PrefastModel::update(const SparseDescriptor& delta, double dE_true)
     }
 
     double scale = config_.learning_rate * err / (config_.lms_epsilon + norm2);
+    stats.update_scale = scale;
+    stats.changes.reserve(delta.values.size());
+
     for (const auto& kv : delta.values) {
         if (kv.first >= 0 && kv.first < (int)weights_.size()) {
+            double before = weights_[kv.first];
             weights_[kv.first] += scale * kv.second;
+            double after = weights_[kv.first];
+            PrefastWeightChange change;
+            change.feature_index = kv.first;
+            if (kv.first < (int)feature_names_.size()) {
+                change.feature_name = feature_names_[kv.first];
+            }
+            change.descriptor_value = kv.second;
+            change.weight_before = before;
+            change.weight_after = after;
+            change.delta_weight = after - before;
+            stats.changes.push_back(change);
         }
     }
+
+    stats.weight_norm_after = std::sqrt(vector_norm2(weights_));
+    stats.max_abs_weight_after = max_abs_value(weights_);
+    double delta_norm2 = 0.0;
+    for (const auto& change : stats.changes) {
+        delta_norm2 += change.delta_weight * change.delta_weight;
+    }
+    stats.weight_delta_norm = std::sqrt(delta_norm2);
+    stats.n_total_features = (int)weights_.size();
+    return stats;
 }
 
 void PrefastModel::append_learning_log(const fs::path& path,
                                        int step,
                                        const std::string& trial_id,
-                                       double dE_pred,
-                                       double dE_true,
+                                       double dE_pred_at_proposal,
+                                       const PrefastUpdateStats& stats,
                                        bool accepted) const
 {
     if (!enabled()) return;
@@ -392,15 +445,83 @@ void PrefastModel::append_learning_log(const fs::path& path,
     std::ofstream out(path, std::ios::app);
     if (!out) return;
     if (need_header) {
-        out << "step\ttrial_id\tdE_pred\tdE_true\terror\tlearning_rate\taccepted\n";
+        out << "step\ttrial_id"
+            << "\tdE_pred_at_proposal\tdE_pred_current\tdE_true"
+            << "\terror_at_proposal\terror_current"
+            << "\tnorm_dD\tnorm2_dD\tn_active_features\tn_total_features"
+            << "\tlearning_rate\tweight_decay\tupdate_scale"
+            << "\tweight_norm_before\tweight_norm_after\tweight_delta_norm"
+            << "\tmax_abs_weight_before\tmax_abs_weight_after"
+            << "\taccepted\n";
     }
+    double error_at_proposal = stats.dE_true - dE_pred_at_proposal;
     out << step << "\t" << trial_id
-        << "\t" << std::setprecision(12) << dE_pred
-        << "\t" << dE_true
-        << "\t" << (dE_true - dE_pred)
-        << "\t" << config_.learning_rate
+        << "\t" << std::setprecision(12) << dE_pred_at_proposal
+        << "\t" << stats.dE_pred_current
+        << "\t" << stats.dE_true
+        << "\t" << error_at_proposal
+        << "\t" << stats.error_current
+        << "\t" << stats.norm_dD
+        << "\t" << stats.norm2_dD
+        << "\t" << stats.n_active_features
+        << "\t" << stats.n_total_features
+        << "\t" << stats.learning_rate
+        << "\t" << stats.weight_decay
+        << "\t" << stats.update_scale
+        << "\t" << stats.weight_norm_before
+        << "\t" << stats.weight_norm_after
+        << "\t" << stats.weight_delta_norm
+        << "\t" << stats.max_abs_weight_before
+        << "\t" << stats.max_abs_weight_after
         << "\t" << (accepted ? "accepted" : "rejected")
         << "\n";
+}
+
+void PrefastModel::append_weight_update_log(const fs::path& path,
+                                            int step,
+                                            const std::string& trial_id,
+                                            const PrefastUpdateStats& stats) const
+{
+    if (!enabled()) return;
+    bool need_header = !fs::exists(path);
+    std::ofstream out(path, std::ios::app);
+    if (!out) return;
+    if (need_header) {
+        out << "step\ttrial_id\tfeature_index\tfeature_name"
+            << "\tdescriptor_value\tweight_before\tweight_after\tdelta_weight\n";
+    }
+    for (const auto& change : stats.changes) {
+        out << step
+            << "\t" << trial_id
+            << "\t" << change.feature_index
+            << "\t" << change.feature_name
+            << "\t" << std::setprecision(12) << change.descriptor_value
+            << "\t" << change.weight_before
+            << "\t" << change.weight_after
+            << "\t" << change.delta_weight
+            << "\n";
+    }
+}
+
+void PrefastModel::append_weight_snapshot_log(const fs::path& path,
+                                              int step,
+                                              const std::string& trial_id) const
+{
+    if (!enabled()) return;
+    bool need_header = !fs::exists(path);
+    std::ofstream out(path, std::ios::app);
+    if (!out) return;
+    if (need_header) {
+        out << "step\ttrial_id\tfeature_index\tfeature_name\tweight\n";
+    }
+    for (int i = 0; i < (int)weights_.size(); ++i) {
+        out << step
+            << "\t" << trial_id
+            << "\t" << i
+            << "\t" << (i < (int)feature_names_.size() ? feature_names_[i] : "")
+            << "\t" << std::setprecision(12) << weights_[i]
+            << "\n";
+    }
 }
 
 void PrefastModel::print_startup_log(std::ostream& out) const

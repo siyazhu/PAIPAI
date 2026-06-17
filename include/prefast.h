@@ -44,19 +44,54 @@ struct TrialScore {
     double norm_dD = 0.0;
 };
 
+struct PrefastWeightChange {
+    int feature_index = -1;
+    std::string feature_name;
+    double descriptor_value = 0.0;
+    double weight_before = 0.0;
+    double weight_after = 0.0;
+    double delta_weight = 0.0;
+};
+
+struct PrefastUpdateStats {
+    double dE_pred_current = 0.0;
+    double dE_true = 0.0;
+    double error_current = 0.0;
+    double norm_dD = 0.0;
+    double norm2_dD = 0.0;
+    double update_scale = 0.0;
+    double learning_rate = 0.0;
+    double weight_decay = 0.0;
+    double weight_norm_before = 0.0;
+    double weight_norm_after = 0.0;
+    double weight_delta_norm = 0.0;
+    double max_abs_weight_before = 0.0;
+    double max_abs_weight_after = 0.0;
+    int n_active_features = 0;
+    int n_total_features = 0;
+    std::vector<PrefastWeightChange> changes;
+};
+
 class PrefastModel {
 public:
     bool build(const Structure& reference, const PrefastConfig& cfg);
     bool enabled() const { return built_ && config_.enabled; }
 
     TrialScore score(const Structure& before, const Structure& after);
-    void update(const SparseDescriptor& delta, double dE_true);
+    PrefastUpdateStats update(const SparseDescriptor& delta, double dE_true);
     void append_learning_log(const std::filesystem::path& path,
                              int step,
                              const std::string& trial_id,
-                             double dE_pred,
-                             double dE_true,
+                             double dE_pred_at_proposal,
+                             const PrefastUpdateStats& stats,
                              bool accepted) const;
+    void append_weight_update_log(const std::filesystem::path& path,
+                                  int step,
+                                  const std::string& trial_id,
+                                  const PrefastUpdateStats& stats) const;
+    void append_weight_snapshot_log(const std::filesystem::path& path,
+                                    int step,
+                                    const std::string& trial_id) const;
 
     void print_startup_log(std::ostream& out) const;
     void write_basis_log(const std::filesystem::path& path) const;

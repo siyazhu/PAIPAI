@@ -50,6 +50,8 @@ Major updates include:
 - online normalized-LMS learning from slow-worker relaxed energies
 - startup basis diagnostics in `prefast_basis.log`
 - learning diagnostics in `prefast_learning.log`
+- per-feature weight update diagnostics in `prefast_weight_updates.log`
+- full weight-vector snapshots in `prefast_weights.log`
 
 The prefast model is used only to prioritize which trial configurations are sent to fast workers. Final Monte Carlo acceptance still uses the exact MLIP-relaxed energy returned by the slow worker.
 
@@ -482,6 +484,8 @@ Diagnostics are written to:
 ```text
 prefast_basis.log
 prefast_learning.log
+prefast_weight_updates.log
+prefast_weights.log
 ```
 
 ---
