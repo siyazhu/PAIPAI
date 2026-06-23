@@ -68,6 +68,12 @@ The purpose is to help interstitial atoms move together with a partially rearran
 
 ---
 
+# Local Hop Moves
+
+Explicit `hop_interstitial` proposals are not recommended for search/prefast runs. During relaxation, these trials can be reassigned back to the original site pair or to a third site, which makes the trial proposal descriptor inconsistent with the final relaxed energy label. Use `--p-hop-inter 0` unless deliberately testing hop proposals.
+
+---
+
 # Relaxed Interstitial Reassignment
 
 Search mode allows interstitial atoms to hop between candidate sites during relaxation.
@@ -87,6 +93,12 @@ SEARCH_REASSIGN task_id=... n_reassigned=...
 ```
 
 If no valid one-to-one assignment can be found within the cutoff, the candidate is discarded.
+
+If reassignment leaves the final discrete occupation identical to the base state, PAIPAI discards the task without counting it as an MC proposal and without updating prefast. This is logged as:
+
+```text
+DISCARD_NO_CHANGE task_id=... move=... delta_source=... reason=... n_reassigned=...
+```
 
 ---
 

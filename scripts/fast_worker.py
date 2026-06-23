@@ -169,6 +169,7 @@ def main():
     # handshake files with C++ master
     poscar = FAST / f"POSCAR{k}"
     savef  = FAST / f"SAVE{k}"
+    base_savef = FAST / f"BASE_SAVE{k}"
     metaf  = FAST / f"META{k}"
     gof    = FAST / f".go_{k}"
     donef  = FAST / f".done_{k}"
@@ -238,6 +239,8 @@ def main():
                 atomic_write_poscar(struct_screen, tmpd / "POSCAR")
                 if savef.exists():
                     atomic_copy(savef, tmpd / "SAVE")
+                if base_savef.exists():
+                    atomic_copy(base_savef, tmpd / "BASE_SAVE")
                 meta = {
                     **meta_in,
                     "task_id": task_id,

@@ -84,7 +84,9 @@ public:
                              const std::string& trial_id,
                              double dE_pred_at_proposal,
                              const PrefastUpdateStats& stats,
-                             bool accepted) const;
+                             bool accepted,
+                             const std::string& delta_source,
+                             int n_reassigned) const;
     void append_weight_update_log(const std::filesystem::path& path,
                                   int step,
                                   const std::string& trial_id,

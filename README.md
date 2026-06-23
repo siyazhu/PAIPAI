@@ -401,7 +401,7 @@ for example GPU submission scripts.
 | `--temp T` | Monte Carlo temperature |
 | `--p-swap-metal N` | Weight for metal swap moves |
 | `--p-swap-inter N` | Weight for interstitial swap moves |
-| `--p-hop-inter N` | Weight for local interstitial hop moves between nearby interstitial sites |
+| `--p-hop-inter N` | Weight for local interstitial hop moves between nearby interstitial sites. For search/prefast runs, use `0` unless deliberately testing hop proposals. |
 | `--p-cluster-inter N` | Weight for cluster interstitial swap moves |
 | `--intsite-neighbor-cutoff X` | Cutoff for interstitial-site neighbor mapping |
 | `--intsite-hop-cutoff X` | Cutoff for the local interstitial-hop neighbor graph |
@@ -598,7 +598,7 @@ The default value is `0`, so existing runs are unchanged unless this move is exp
 
 ## 4. Local interstitial hop move
 
-PAIPAI v2.0-dev also includes an optional local interstitial hop move for `finiteT` sampling:
+PAIPAI v2.0-dev also includes an optional local interstitial hop move for `finiteT` sampling. For search/prefast runs, keep this move off unless deliberately testing it because relaxed site reassignment can reverse or remap the trial hop, which makes the proposal ambiguous for prefast learning.
 
 - neighboring interstitial-site pairs are cached in `intsite_hop_neighbors.dat`
 - a valid proposal swaps two nearby sites with different interstitial occupations

@@ -257,6 +257,9 @@ def main():
             if save_in.exists():
                 atomic_copy(save_in, tmpd / "SAVE")
                 atomic_copy(save_in, tmpd / "REFERENCE_SAVE")
+            base_save_in = picked / "BASE_SAVE"
+            if base_save_in.exists():
+                atomic_copy(base_save_in, tmpd / "BASE_SAVE")
 
             os.rename(tmpd, final)
 

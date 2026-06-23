@@ -427,6 +427,9 @@ void archive_mc_accept(const fs::path& root,
     copy_file_overwrite(out_dir / "CONTCAR",  mc_dir / "CONTCAR");
     copy_file_overwrite(out_dir / "SAVE",     mc_dir / "SAVE");
     copy_file_overwrite(out_dir / "REFERENCE_SAVE", mc_dir / "REFERENCE_SAVE");
+    if (fs::exists(out_dir / "BASE_SAVE")) {
+        copy_file_overwrite(out_dir / "BASE_SAVE", mc_dir / "BASE_SAVE");
+    }
     copy_file_overwrite(out_dir / "meta.json",mc_dir / "meta.json");
 
     std::ofstream info(mc_dir / "info.txt");
@@ -730,9 +733,11 @@ bool generate_candidate_for_slot(int slot,
 
     fs::path pos = fast_dir / ("POSCAR" + std::to_string(slot));
     fs::path sav = fast_dir / ("SAVE"   + std::to_string(slot));
+    fs::path base_sav = fast_dir / ("BASE_SAVE" + std::to_string(slot));
     fs::path met = fast_dir / ("META"   + std::to_string(slot));
 
     chosen.trial_init.outputvasp(pos.string().c_str());
+    current_ref.outputsave(base_sav.string().c_str());
     chosen.trial_ref.outputsave(sav.string().c_str());
     json meta;
     meta["source"] = "search_fast_screen";
@@ -1032,14 +1037,18 @@ bool process_report_file(const fs::path& root,
         log.flush();
     }
 
-    // Normal MC proposal
-    ++mc_steps;
     double hastings_ratio = 1.0;
     std::string move_type = "<unknown>";
     bool meta_prefast_enabled = false;
     double prefast_dE_pred = 0.0;
     double prefast_base_energy = current_E;
     SparseDescriptor prefast_delta;
+    SparseDescriptor prefast_learning_delta;
+    std::string prefast_learning_delta_source = "none";
+    bool have_prefast_learning_delta = false;
+    bool computed_prefast_learning_delta = false;
+    bool have_base_ref = false;
+    bool final_same_as_base = false;
     try {
         std::ifstream meta_ifs(meta_path);
         if (meta_ifs) {
@@ -1057,16 +1066,60 @@ bool process_report_file(const fs::path& root,
     } catch (...) {
         hastings_ratio = 1.0;
     }
+
+    Structure prefast_base_ref;
+    fs::path prefast_base_save_path = out_dir / "BASE_SAVE";
+    if (fs::exists(prefast_base_save_path) &&
+        prefast_base_ref.readstruc(prefast_base_save_path.string().c_str())) {
+        have_base_ref = true;
+        final_same_as_base =
+            prefast_base_ref.atomtype == trial_ref.atomtype &&
+            prefast_base_ref.interstitial_postype == trial_ref.interstitial_postype;
+        if (prefast && prefast->enabled()) {
+            TrialScore learning_score = prefast->score(prefast_base_ref, trial_ref);
+            prefast_learning_delta = learning_score.delta;
+            prefast_learning_delta_source =
+                (allow_interstitial_reassign && n_reassigned > 0)
+                    ? "final_reassigned"
+                    : "final";
+            computed_prefast_learning_delta = true;
+            have_prefast_learning_delta = !prefast_learning_delta.values.empty();
+        }
+    } else if (!prefast_delta.values.empty()) {
+        prefast_learning_delta = prefast_delta;
+        prefast_learning_delta_source = "trial_meta";
+        have_prefast_learning_delta = true;
+    }
+
+    if (have_base_ref &&
+        (final_same_as_base ||
+         (computed_prefast_learning_delta && prefast_learning_delta.values.empty()))) {
+        log << "DISCARD_NO_CHANGE task_id=" << task_id
+            << " move=" << move_type
+            << " delta_source=" << prefast_learning_delta_source
+            << " reason="
+            << (final_same_as_base ? "final_same_as_base" : "empty_descriptor_delta")
+            << " n_reassigned=" << n_reassigned
+            << "\n";
+        log.flush();
+        cleanup_processed_task(root, task_id, rep_path, true);
+        return true;
+    }
+
+    // Normal MC proposal
+    ++mc_steps;
     bool accept = Accept(current_E, E_final, temp, rng, hastings_ratio);
-    if (prefast && prefast->enabled() && meta_prefast_enabled && !prefast_delta.values.empty()) {
+    if (prefast && prefast->enabled() && meta_prefast_enabled && have_prefast_learning_delta) {
         double dE_true_for_learning = E_final - prefast_base_energy;
-        auto update_stats = prefast->update(prefast_delta, dE_true_for_learning);
+        auto update_stats = prefast->update(prefast_learning_delta, dE_true_for_learning);
         prefast->append_learning_log(root / "prefast_learning.log",
                                      mc_steps,
                                      task_id,
                                      prefast_dE_pred,
                                      update_stats,
-                                     accept);
+                                     accept,
+                                     prefast_learning_delta_source,
+                                     n_reassigned);
         prefast->append_weight_update_log(root / "prefast_weight_updates.log",
                                           mc_steps,
                                           task_id,
