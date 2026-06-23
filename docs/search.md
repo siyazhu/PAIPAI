@@ -74,6 +74,14 @@ Explicit `hop_interstitial` proposals are not recommended for search/prefast run
 
 ---
 
+# Prefast Warmup
+
+When prefast is enabled, `--prefast-warmup-steps N` uses the first `N` valid MC proposals for learning without multi-candidate ranking. During warmup, each free fast-worker slot receives one ordinary random trial. The relaxed result still updates prefast weights using the final reassigned structure.
+
+Discarded no-change tasks do not increment the warmup counter.
+
+---
+
 # Relaxed Interstitial Reassignment
 
 Search mode allows interstitial atoms to hop between candidate sites during relaxation.

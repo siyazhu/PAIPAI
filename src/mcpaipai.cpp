@@ -57,6 +57,7 @@ void print_help(const char* prog){
               << "[--interstitial-site-cutoff R] "
               << "[--resume-state DIR] [--continue] "
               << "[--prefast on|off] [--prefast-candidates-per-slot N] "
+              << "[--prefast-warmup-steps N] "
               << "[--prefast-basis ref-dz] [--prefast-nshells N] "
               << "[--prefast-peak-scan-cutoff R] [--prefast-peak-tol R] "
               << "[--prefast-sigma-small R] [--prefast-sigma-large R] "
@@ -98,6 +99,7 @@ Args parse_args(int argc, char** argv){
             else { std::cerr << "--prefast must be on or off\n"; std::exit(2); }
         }
         else if (s=="--prefast-candidates-per-slot"){ need("--prefast-candidates-per-slot"); a.prefast.candidates_per_slot=std::max(1, std::stoi(argv[++i])); }
+        else if (s=="--prefast-warmup-steps"){ need("--prefast-warmup-steps"); a.prefast.warmup_steps=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--prefast-basis"){ need("--prefast-basis"); a.prefast.basis=argv[++i]; }
         else if (s=="--prefast-nshells"){ need("--prefast-nshells"); a.prefast.nshells=std::max(1, std::stoi(argv[++i])); }
         else if (s=="--prefast-peak-scan-cutoff"){ need("--prefast-peak-scan-cutoff"); a.prefast.peak_scan_cutoff=std::stod(argv[++i]); }
@@ -685,14 +687,20 @@ bool generate_candidate_for_slot(int slot,
                                  Structure& struc,
                                  int SUMP,
                                  PrefastModel* prefast,
-                                 double current_E)
+                                 double current_E,
+                                 int prefast_learning_steps)
 {
     // 1) Load current discrete reference state from SAVE.
     struc.readstruc("SAVE");
     Structure current_ref = struc;
 
     // 2) Generate either one ordinary trial, or a small prefast-ranked batch.
-    int n_candidates = (prefast && prefast->enabled())
+    bool prefast_enabled = (prefast && prefast->enabled());
+    bool prefast_warmup_active =
+        prefast_enabled &&
+        cfg.prefast.warmup_steps > 0 &&
+        prefast_learning_steps < cfg.prefast.warmup_steps;
+    int n_candidates = (prefast_enabled && !prefast_warmup_active)
                      ? std::max(1, cfg.prefast.candidates_per_slot)
                      : 1;
     std::vector<CandidateTrial> candidates;
@@ -703,7 +711,7 @@ bool generate_candidate_for_slot(int slot,
         if (!generate_one_trial_from_current(current_ref, cfg, root, SUMP, cand)) {
             continue;
         }
-        if (prefast && prefast->enabled()) {
+        if (prefast_enabled) {
             cand.prefast_score = prefast->score(current_ref, cand.trial_ref);
         }
         candidates.push_back(cand);
@@ -716,7 +724,7 @@ bool generate_candidate_for_slot(int slot,
     }
 
     int best = 0;
-    if (prefast && prefast->enabled()) {
+    if (prefast_enabled && !prefast_warmup_active) {
         for (int i = 1; i < (int)candidates.size(); ++i) {
             if (candidates[i].prefast_score.dE_pred <
                 candidates[best].prefast_score.dE_pred) {
@@ -749,11 +757,16 @@ bool generate_candidate_for_slot(int slot,
     meta["move_forward_choices"] = chosen.move.forward_choices;
     meta["move_reverse_choices"] = chosen.move.reverse_choices;
     meta["hastings_ratio"] = chosen.move.hastings_ratio;
-    if (prefast && prefast->enabled()) {
+    if (prefast_enabled) {
         meta["prefast_enabled"] = true;
         meta["prefast_basis"] = cfg.prefast.basis;
+        meta["prefast_requested_candidates_per_slot"] = cfg.prefast.candidates_per_slot;
         meta["prefast_candidates_per_slot"] = n_candidates;
         meta["prefast_candidates_generated"] = (int)candidates.size();
+        meta["prefast_warmup_steps"] = cfg.prefast.warmup_steps;
+        meta["prefast_learning_step_at_proposal"] = prefast_learning_steps;
+        meta["prefast_warmup_active"] = prefast_warmup_active;
+        meta["prefast_ranking_active"] = !prefast_warmup_active && n_candidates > 1;
         meta["prefast_selected_rank"] = 1;
         meta["prefast_selected_generated_index"] = chosen.generated_index;
         meta["prefast_dE_pred"] = chosen.prefast_score.dE_pred;
@@ -1282,6 +1295,7 @@ int main(int argc, char** argv){
         << " continue=" << (cfg.continue_run ? "true" : "false")
         << " prefast=" << (cfg.prefast.enabled ? "on" : "off")
         << " prefast_candidates_per_slot=" << cfg.prefast.candidates_per_slot
+        << " prefast_warmup_steps=" << cfg.prefast.warmup_steps
         << " prefast_basis=" << cfg.prefast.basis
         << " prefast_nshells=" << cfg.prefast.nshells
         << " prefast_peak_scan_cutoff=" << cfg.prefast.peak_scan_cutoff
@@ -1388,7 +1402,7 @@ int main(int argc, char** argv){
 
                 fs::path gof = ROOT / "fast" / (".go_" + std::to_string(k));
                 if (fs::exists(gof)) continue;  // slot is busy
-                if (generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP, &prefast, current_E)) {
+                if (generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP, &prefast, current_E, mc_steps)) {
                     processed_any = true;
                     cout << "generating candidate for worker #" << k << " successfully" << endl;
                 }

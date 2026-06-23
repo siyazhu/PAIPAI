@@ -558,6 +558,7 @@ void PrefastModel::print_startup_log(std::ostream& out) const
     out << "[prefast] descriptor channels = " << feature_names_.size() << "\n";
     out << "[prefast] learning rule = normalized LMS\n";
     out << "[prefast] learning rate = " << config_.learning_rate << "\n";
+    out << "[prefast] warmup steps = " << config_.warmup_steps << "\n";
     out << "[prefast] NOTE: This descriptor is used only for trial ranking/adaptive proposal ordering.\n";
     out << "[prefast] Exact MLIP-relaxed energies are still used for MC acceptance.\n";
 }

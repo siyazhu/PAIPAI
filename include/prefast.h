@@ -20,6 +20,7 @@ enum class SiteFamily {
 struct PrefastConfig {
     bool enabled = false;
     int candidates_per_slot = 6;
+    int warmup_steps = 1000;
     std::string basis = "ref-dz";
     int nshells = 3;
     double peak_scan_cutoff = 6.0;
