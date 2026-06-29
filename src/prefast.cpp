@@ -282,6 +282,26 @@ bool PrefastModel::build(const Structure& reference, const PrefastConfig& cfg)
     return true;
 }
 
+bool PrefastModel::log_summary() const
+{
+    return enabled() &&
+           (config_.diagnostics == "summary" ||
+            config_.diagnostics == "updates" ||
+            config_.diagnostics == "full");
+}
+
+bool PrefastModel::log_weight_updates() const
+{
+    return enabled() &&
+           (config_.diagnostics == "updates" ||
+            config_.diagnostics == "full");
+}
+
+bool PrefastModel::log_weight_snapshots() const
+{
+    return enabled() && config_.diagnostics == "full";
+}
+
 int PrefastModel::site_atomic_number(const Structure& s, int site_id) const
 {
     if (site_id < s.num_metallic_atoms) {
@@ -548,6 +568,7 @@ void PrefastModel::print_startup_log(std::ostream& out) const
     out << "[prefast] descriptor channels = " << feature_names_.size() << "\n";
     out << "[prefast] learning rule = normalized LMS\n";
     out << "[prefast] learning rate = " << config_.learning_rate << "\n";
+    out << "[prefast] diagnostics = " << config_.diagnostics << "\n";
     out << "[prefast] NOTE: This descriptor is used only for trial ranking/adaptive proposal ordering.\n";
     out << "[prefast] Exact MLIP-relaxed energies are still used for MC acceptance.\n";
 }

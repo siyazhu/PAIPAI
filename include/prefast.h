@@ -30,6 +30,7 @@ struct PrefastConfig {
     double learning_rate = 0.01;
     double lms_epsilon = 1.0e-12;
     double weight_decay = 0.0;
+    std::string diagnostics = "summary";
 };
 
 struct SparseDescriptor {
@@ -76,6 +77,9 @@ class PrefastModel {
 public:
     bool build(const Structure& reference, const PrefastConfig& cfg);
     bool enabled() const { return built_ && config_.enabled; }
+    bool log_summary() const;
+    bool log_weight_updates() const;
+    bool log_weight_snapshots() const;
 
     TrialScore score(const Structure& before, const Structure& after);
     PrefastUpdateStats update(const SparseDescriptor& delta, double dE_true);

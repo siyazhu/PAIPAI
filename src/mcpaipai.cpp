@@ -61,7 +61,8 @@ void print_help(const char* prog){
               << "[--prefast-peak-scan-cutoff R] [--prefast-peak-tol R] "
               << "[--prefast-sigma-small R] [--prefast-sigma-large R] "
               << "[--prefast-cutoff-margin R] [--prefast-learning-rate LR] "
-              << "[--prefast-lms-epsilon EPS] [--prefast-weight-decay R]\n";
+              << "[--prefast-lms-epsilon EPS] [--prefast-weight-decay R] "
+              << "[--prefast-diagnostics off|summary|updates|full]\n";
 }
 
 Args parse_args(int argc, char** argv){
@@ -108,6 +109,10 @@ Args parse_args(int argc, char** argv){
         else if (s=="--prefast-learning-rate"){ need("--prefast-learning-rate"); a.prefast.learning_rate=std::stod(argv[++i]); }
         else if (s=="--prefast-lms-epsilon"){ need("--prefast-lms-epsilon"); a.prefast.lms_epsilon=std::stod(argv[++i]); }
         else if (s=="--prefast-weight-decay"){ need("--prefast-weight-decay"); a.prefast.weight_decay=std::stod(argv[++i]); }
+        else if (s=="--prefast-diagnostics"){
+            need("--prefast-diagnostics");
+            a.prefast.diagnostics=argv[++i];
+        }
         else { std::cerr<<"Unknown arg: "<<s<<"\n"; print_help(argv[0]); std::exit(2); }
     }
     int sum = a.p_swap_metal + a.p_swap_inter + a.p_hop_inter + a.p_cluster_inter +
@@ -142,6 +147,13 @@ Args parse_args(int argc, char** argv){
         a.prefast.lms_epsilon <= 0.0 ||
         a.prefast.weight_decay < 0.0) {
         std::cerr << "Invalid prefast parameter value.\n";
+        std::exit(2);
+    }
+    if (a.prefast.diagnostics != "off" &&
+        a.prefast.diagnostics != "summary" &&
+        a.prefast.diagnostics != "updates" &&
+        a.prefast.diagnostics != "full") {
+        std::cerr << "--prefast-diagnostics must be off, summary, updates, or full.\n";
         std::exit(2);
     }
     if (a.resume_state_dir.empty() && !a.continue_run && a.input_struc.empty()) {
@@ -1061,19 +1073,25 @@ bool process_report_file(const fs::path& root,
     if (prefast && prefast->enabled() && meta_prefast_enabled && !prefast_delta.values.empty()) {
         double dE_true_for_learning = E_final - prefast_base_energy;
         auto update_stats = prefast->update(prefast_delta, dE_true_for_learning);
-        prefast->append_learning_log(root / "prefast_learning.log",
-                                     mc_steps,
-                                     task_id,
-                                     prefast_dE_pred,
-                                     update_stats,
-                                     accept);
-        prefast->append_weight_update_log(root / "prefast_weight_updates.log",
-                                          mc_steps,
-                                          task_id,
-                                          update_stats);
-        prefast->append_weight_snapshot_log(root / "prefast_weights.log",
-                                            mc_steps,
-                                            task_id);
+        if (prefast->log_summary()) {
+            prefast->append_learning_log(root / "prefast_learning.log",
+                                         mc_steps,
+                                         task_id,
+                                         prefast_dE_pred,
+                                         update_stats,
+                                         accept);
+        }
+        if (prefast->log_weight_updates()) {
+            prefast->append_weight_update_log(root / "prefast_weight_updates.log",
+                                              mc_steps,
+                                              task_id,
+                                              update_stats);
+        }
+        if (prefast->log_weight_snapshots()) {
+            prefast->append_weight_snapshot_log(root / "prefast_weights.log",
+                                                mc_steps,
+                                                task_id);
+        }
     }
     log << "STEP " << mc_steps
         << " proposal task_id=" << task_id
@@ -1200,8 +1218,12 @@ int main(int argc, char** argv){
     PrefastModel prefast;
     if (cfg.prefast.enabled) {
         prefast.build(struc, cfg.prefast);
-        prefast.print_startup_log(std::cout);
-        prefast.write_basis_log(ROOT / "prefast_basis.log");
+        if (prefast.log_summary()) {
+            prefast.print_startup_log(std::cout);
+            prefast.write_basis_log(ROOT / "prefast_basis.log");
+        } else if (prefast.enabled()) {
+            std::cout << "[prefast] enabled; diagnostics = off\n";
+        }
     }
 
     std::ofstream log;
@@ -1239,6 +1261,7 @@ int main(int argc, char** argv){
         << " prefast_learning_rate=" << cfg.prefast.learning_rate
         << " prefast_lms_epsilon=" << cfg.prefast.lms_epsilon
         << " prefast_weight_decay=" << cfg.prefast.weight_decay
+        << " prefast_diagnostics=" << cfg.prefast.diagnostics
         << "\n";
 
     bool have_state = false;

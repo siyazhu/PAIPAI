@@ -707,6 +707,7 @@ Option & Meaning \\
 --prefast-learning-rate X & Normalized-LMS learning rate. \\
 --prefast-lms-epsilon X & Small denominator stabilizer. \\
 --prefast-weight-decay X & Optional weight decay. \\
+--prefast-diagnostics off|summary|updates|full & Prefast diagnostic verbosity. The default is \texttt{summary}. \\
 \bottomrule
 \end{longtable}
 
@@ -844,18 +845,23 @@ Per-task metadata. In v2.1, prefast-selected tasks include fields such as \textt
 
 \subsection{Prefast Logs}
 
+Prefast diagnostic output is controlled by \texttt{--prefast-diagnostics}.
+The default \texttt{summary} level writes only the basis and learning-summary logs.
+Use \texttt{updates} to additionally record active feature weight changes, and \texttt{full} only when the complete learned weight vector is needed after every learning step.
+The \texttt{off} level suppresses prefast diagnostic files.
+
 \begin{description}[leftmargin=3.2cm,style=nextline]
 \item[\texttt{prefast\_basis.log}]
-Contains site-pair family, shell index, shell center, Gaussian widths, cutoff, and number of reference pairs in each shell.
+Written at \texttt{summary}, \texttt{updates}, and \texttt{full}. Contains site-pair family, shell index, shell center, Gaussian widths, cutoff, and number of reference pairs in each shell.
 
 \item[\texttt{prefast\_learning.log}]
-Contains online learning diagnostics: MC step, trial id, predicted energy change at proposal time, current predicted energy change at update time, true energy change, both errors, descriptor norm, number of active features, learning rate, update scale, weight norm before and after the update, maximum absolute weight, and accepted/rejected label.
+Written at \texttt{summary}, \texttt{updates}, and \texttt{full}. Contains online learning diagnostics: MC step, trial id, predicted energy change at proposal time, current predicted energy change at update time, true energy change, both errors, descriptor norm, number of active features, learning rate, update scale, weight norm before and after the update, maximum absolute weight, and accepted/rejected label.
 
 \item[\texttt{prefast\_weight\_updates.log}]
-Contains one row per changed feature weight during each learning update. The columns include step, trial id, feature index, feature name, descriptor value, weight before update, weight after update, and the weight increment.
+Written at \texttt{updates} and \texttt{full}. Contains one row per changed feature weight during each learning update. The columns include step, trial id, feature index, feature name, descriptor value, weight before update, weight after update, and the weight increment.
 
 \item[\texttt{prefast\_weights.log}]
-Contains a complete snapshot of the learned weight vector after each learning update. It is written in long TSV format with one row per feature: step, trial id, feature index, feature name, and current weight. This file can become large because every feature is written at every update.
+Written only at \texttt{full}. Contains a complete snapshot of the learned weight vector after each learning update. It is written in long TSV format with one row per feature: step, trial id, feature index, feature name, and current weight. This file can become large because every feature is written at every update.
 \end{description}
 
 \subsection{Accepted-State Archive}
