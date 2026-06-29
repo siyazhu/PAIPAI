@@ -597,7 +597,9 @@ paipai \
   --steps 50000 \
   --temp 10 \
   --prefast on \
+  --prefast-warmup-steps 1000 \
   --prefast-candidates-per-slot 6 \
+  --prefast-diagnostics summary \
   --prefast-nshells 3 \
   --prefast-peak-scan-cutoff 6.0 \
   --prefast-peak-tol 0.12 \
@@ -801,7 +803,9 @@ paipai \
   --steps 100000 \
   --temp 10 \
   --prefast on \
-  --prefast-candidates-per-slot 6
+  --prefast-warmup-steps 1000 \
+  --prefast-candidates-per-slot 6 \
+  --prefast-diagnostics summary
 \end{lstlisting}
 
 \subsection{Finite-Temperature Production Script}

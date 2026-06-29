@@ -440,6 +440,7 @@ paipai struc.in \
   --prefast on \
   --prefast-warmup-steps 1000 \
   --prefast-candidates-per-slot 6 \
+  --prefast-diagnostics summary \
   --steps 10000
 ```
 
