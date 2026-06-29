@@ -40,6 +40,7 @@ P_EXCH_INTER=0
 INTSITE_NEIGHBOR_CUTOFF=3.5
 INTSITE_HOP_CUTOFF=3.0
 INTERSTITIAL_SITE_CUTOFF=1.5
+PREFAST_WARMUP_STEPS=1000
 
 MC_EXTRA_ARGS=()
 
@@ -78,6 +79,9 @@ Monte Carlo options:
   --intsite-hop-cutoff X        Cutoff for local interstitial hop graph (default: ${INTSITE_HOP_CUTOFF})
   --interstitial-site-cutoff X  Max relaxed interstitial distance to assigned site (default: ${INTERSTITIAL_SITE_CUTOFF})
 
+Prefast options:
+  --prefast-warmup-steps N      Valid MC proposals used for learning before prefast ranking starts (default: ${PREFAST_WARMUP_STEPS})
+
 Other:
   -h, --help                    Show this help message
 
@@ -114,6 +118,7 @@ while [[ $# -gt 0 ]]; do
         --intsite-neighbor-cutoff) INTSITE_NEIGHBOR_CUTOFF="$2"; shift 2 ;;
         --intsite-hop-cutoff) INTSITE_HOP_CUTOFF="$2"; shift 2 ;;
         --interstitial-site-cutoff) INTERSTITIAL_SITE_CUTOFF="$2"; shift 2 ;;
+        --prefast-warmup-steps) PREFAST_WARMUP_STEPS="$2"; shift 2 ;;
 
         -h|--help) usage; exit 0 ;;
         --) shift; MC_EXTRA_ARGS+=("$@"); break ;;
@@ -206,6 +211,7 @@ echo "[INFO] Move weights: swap_metal=$P_SWAP_METAL, swap_inter=$P_SWAP_INTER, h
 echo "[INFO] INTSITE_NEIGHBOR_CUTOFF = $INTSITE_NEIGHBOR_CUTOFF"
 echo "[INFO] INTSITE_HOP_CUTOFF = $INTSITE_HOP_CUTOFF"
 echo "[INFO] INTERSTITIAL_SITE_CUTOFF = $INTERSTITIAL_SITE_CUTOFF"
+echo "[INFO] PREFAST_WARMUP_STEPS = $PREFAST_WARMUP_STEPS"
 
 if [[ "$MODE" == "finiteT" ]]; then
     echo "[INFO] finiteT mode: skipping fast workers."
@@ -293,6 +299,7 @@ echo "[INFO] Running C++ master..."
         --intsite-neighbor-cutoff "$INTSITE_NEIGHBOR_CUTOFF" \
         --intsite-hop-cutoff "$INTSITE_HOP_CUTOFF" \
         --interstitial-site-cutoff "$INTERSTITIAL_SITE_CUTOFF" \
+        --prefast-warmup-steps "$PREFAST_WARMUP_STEPS" \
         "${MC_RESUME_ARGS[@]}" \
         "${MC_EXTRA_ARGS[@]}"
 )

@@ -696,7 +696,8 @@ Option & Meaning \\
 \midrule
 \endhead
 --prefast on|off & Enable or disable prefast trial ranking. \\
---prefast-candidates-per-slot N & Number of trial candidates generated for each free fast-worker slot. \\
+--prefast-candidates-per-slot N & Number of trial candidates generated for each free fast-worker slot after warmup. \\
+--prefast-warmup-steps N & Number of valid MC proposals used for learning before multi-candidate prefast ranking starts. \\
 --prefast-basis ref-dz & Use the reference-lattice double-zeta radial basis. \\
 --prefast-nshells N & Number of detected shells per site-pair family. \\
 --prefast-peak-scan-cutoff X & Maximum reference pair distance used in shell detection. \\

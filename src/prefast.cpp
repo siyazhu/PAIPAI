@@ -414,6 +414,11 @@ PrefastUpdateStats PrefastModel::update(const SparseDescriptor& delta, double dE
     stats.norm_dD = std::sqrt(norm2);
     stats.weight_norm_before = std::sqrt(vector_norm2(weights_));
     stats.max_abs_weight_before = max_abs_value(weights_);
+    if (norm2 <= 0.0) {
+        stats.weight_norm_after = stats.weight_norm_before;
+        stats.max_abs_weight_after = stats.max_abs_weight_before;
+        return stats;
+    }
 
     if (config_.weight_decay > 0.0) {
         double factor = std::max(0.0, 1.0 - config_.weight_decay);
@@ -458,7 +463,9 @@ void PrefastModel::append_learning_log(const fs::path& path,
                                        const std::string& trial_id,
                                        double dE_pred_at_proposal,
                                        const PrefastUpdateStats& stats,
-                                       bool accepted) const
+                                       bool accepted,
+                                       const std::string& delta_source,
+                                       int n_reassigned) const
 {
     if (!enabled()) return;
     bool need_header = !fs::exists(path);
@@ -472,6 +479,7 @@ void PrefastModel::append_learning_log(const fs::path& path,
             << "\tlearning_rate\tweight_decay\tupdate_scale"
             << "\tweight_norm_before\tweight_norm_after\tweight_delta_norm"
             << "\tmax_abs_weight_before\tmax_abs_weight_after"
+            << "\tdelta_source\tn_reassigned"
             << "\taccepted\n";
     }
     double error_at_proposal = stats.dE_true - dE_pred_at_proposal;
@@ -493,6 +501,8 @@ void PrefastModel::append_learning_log(const fs::path& path,
         << "\t" << stats.weight_delta_norm
         << "\t" << stats.max_abs_weight_before
         << "\t" << stats.max_abs_weight_after
+        << "\t" << delta_source
+        << "\t" << n_reassigned
         << "\t" << (accepted ? "accepted" : "rejected")
         << "\n";
 }
@@ -568,6 +578,7 @@ void PrefastModel::print_startup_log(std::ostream& out) const
     out << "[prefast] descriptor channels = " << feature_names_.size() << "\n";
     out << "[prefast] learning rule = normalized LMS\n";
     out << "[prefast] learning rate = " << config_.learning_rate << "\n";
+    out << "[prefast] warmup steps = " << config_.warmup_steps << "\n";
     out << "[prefast] diagnostics = " << config_.diagnostics << "\n";
     out << "[prefast] NOTE: This descriptor is used only for trial ranking/adaptive proposal ordering.\n";
     out << "[prefast] Exact MLIP-relaxed energies are still used for MC acceptance.\n";

@@ -401,7 +401,7 @@ for example GPU submission scripts.
 | `--temp T` | Monte Carlo temperature |
 | `--p-swap-metal N` | Weight for metal swap moves |
 | `--p-swap-inter N` | Weight for interstitial swap moves |
-| `--p-hop-inter N` | Weight for local interstitial hop moves between nearby interstitial sites |
+| `--p-hop-inter N` | Weight for local interstitial hop moves between nearby interstitial sites. For search/prefast runs, use `0` unless deliberately testing hop proposals. |
 | `--p-cluster-inter N` | Weight for cluster interstitial swap moves |
 | `--intsite-neighbor-cutoff X` | Cutoff for interstitial-site neighbor mapping |
 | `--intsite-hop-cutoff X` | Cutoff for the local interstitial-hop neighbor graph |
@@ -411,14 +411,15 @@ for example GPU submission scripts.
 
 # Prefast options (`v2.1-dev`)
 
-Prefast is an optional adaptive trial-ranking layer in `search` mode. When enabled, PAIPAI generates a small mini-batch of trial moves for each free fast-worker slot, predicts each trial energy change using a reference-lattice descriptor, and sends the lowest predicted trial to the fast worker.
+Prefast is an optional adaptive trial-ranking layer in `search` mode. When enabled, PAIPAI first uses warmup proposals for learning without multi-candidate ranking. After warmup, it generates a small mini-batch of trial moves for each free fast-worker slot, predicts each trial energy change using a reference-lattice descriptor, and sends the lowest predicted trial to the fast worker.
 
 Prefast does not replace MLIP relaxation and does not change final Metropolis acceptance. Slow-worker relaxed energies remain the source of truth.
 
 | Option | Description |
 |---|---|
 | `--prefast on|off` | Enable or disable prefast trial ranking |
-| `--prefast-candidates-per-slot N` | Number of trial moves generated and ranked for each free fast-worker slot |
+| `--prefast-candidates-per-slot N` | Number of trial moves generated and ranked for each free fast-worker slot after warmup |
+| `--prefast-warmup-steps N` | Number of valid MC proposals used for learning before multi-candidate prefast ranking starts |
 | `--prefast-basis ref-dz` | Use the reference-lattice double-zeta radial basis descriptor |
 | `--prefast-nshells N` | Number of detected reference distance shells per site-pair family |
 | `--prefast-peak-scan-cutoff X` | Maximum reference pair distance used to detect shell peaks |
@@ -437,6 +438,7 @@ Example:
 paipai struc.in \
   --mode search \
   --prefast on \
+  --prefast-warmup-steps 1000 \
   --prefast-candidates-per-slot 6 \
   --steps 10000
 ```
@@ -451,7 +453,8 @@ PAIPAI v2.1-dev adds an optional prefast model that ranks trial moves before the
 
 For each free fast-worker slot:
 - the master reads the current accepted `SAVE`
-- it generates a small mini-batch of candidate trial moves
+- during warmup, it generates one ordinary trial and learns from the relaxed result
+- after `--prefast-warmup-steps` valid MC proposals, it generates a small mini-batch of candidate trial moves
 - each candidate is scored by a reference-lattice descriptor and the current adaptive weights
 - only the lowest predicted candidate is sent to the fast worker
 
@@ -601,7 +604,7 @@ The default value is `0`, so existing runs are unchanged unless this move is exp
 
 ## 4. Local interstitial hop move
 
-PAIPAI v2.0-dev also includes an optional local interstitial hop move for `finiteT` sampling:
+PAIPAI v2.0-dev also includes an optional local interstitial hop move for `finiteT` sampling. For search/prefast runs, keep this move off unless deliberately testing it because relaxed site reassignment can reverse or remap the trial hop, which makes the proposal ambiguous for prefast learning.
 
 - neighboring interstitial-site pairs are cached in `intsite_hop_neighbors.dat`
 - a valid proposal swaps two nearby sites with different interstitial occupations

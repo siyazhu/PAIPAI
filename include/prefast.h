@@ -20,6 +20,7 @@ enum class SiteFamily {
 struct PrefastConfig {
     bool enabled = false;
     int candidates_per_slot = 6;
+    int warmup_steps = 1000;
     std::string basis = "ref-dz";
     int nshells = 3;
     double peak_scan_cutoff = 6.0;
@@ -88,7 +89,9 @@ public:
                              const std::string& trial_id,
                              double dE_pred_at_proposal,
                              const PrefastUpdateStats& stats,
-                             bool accepted) const;
+                             bool accepted,
+                             const std::string& delta_source,
+                             int n_reassigned) const;
     void append_weight_update_log(const std::filesystem::path& path,
                                   int step,
                                   const std::string& trial_id,

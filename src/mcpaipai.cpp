@@ -57,6 +57,7 @@ void print_help(const char* prog){
               << "[--interstitial-site-cutoff R] "
               << "[--resume-state DIR] [--continue] "
               << "[--prefast on|off] [--prefast-candidates-per-slot N] "
+              << "[--prefast-warmup-steps N] "
               << "[--prefast-basis ref-dz] [--prefast-nshells N] "
               << "[--prefast-peak-scan-cutoff R] [--prefast-peak-tol R] "
               << "[--prefast-sigma-small R] [--prefast-sigma-large R] "
@@ -99,6 +100,7 @@ Args parse_args(int argc, char** argv){
             else { std::cerr << "--prefast must be on or off\n"; std::exit(2); }
         }
         else if (s=="--prefast-candidates-per-slot"){ need("--prefast-candidates-per-slot"); a.prefast.candidates_per_slot=std::max(1, std::stoi(argv[++i])); }
+        else if (s=="--prefast-warmup-steps"){ need("--prefast-warmup-steps"); a.prefast.warmup_steps=std::max(0, std::stoi(argv[++i])); }
         else if (s=="--prefast-basis"){ need("--prefast-basis"); a.prefast.basis=argv[++i]; }
         else if (s=="--prefast-nshells"){ need("--prefast-nshells"); a.prefast.nshells=std::max(1, std::stoi(argv[++i])); }
         else if (s=="--prefast-peak-scan-cutoff"){ need("--prefast-peak-scan-cutoff"); a.prefast.peak_scan_cutoff=std::stod(argv[++i]); }
@@ -439,6 +441,9 @@ void archive_mc_accept(const fs::path& root,
     copy_file_overwrite(out_dir / "CONTCAR",  mc_dir / "CONTCAR");
     copy_file_overwrite(out_dir / "SAVE",     mc_dir / "SAVE");
     copy_file_overwrite(out_dir / "REFERENCE_SAVE", mc_dir / "REFERENCE_SAVE");
+    if (fs::exists(out_dir / "BASE_SAVE")) {
+        copy_file_overwrite(out_dir / "BASE_SAVE", mc_dir / "BASE_SAVE");
+    }
     copy_file_overwrite(out_dir / "meta.json",mc_dir / "meta.json");
 
     std::ofstream info(mc_dir / "info.txt");
@@ -694,14 +699,20 @@ bool generate_candidate_for_slot(int slot,
                                  Structure& struc,
                                  int SUMP,
                                  PrefastModel* prefast,
-                                 double current_E)
+                                 double current_E,
+                                 int prefast_learning_steps)
 {
     // 1) Load current discrete reference state from SAVE.
     struc.readstruc("SAVE");
     Structure current_ref = struc;
 
     // 2) Generate either one ordinary trial, or a small prefast-ranked batch.
-    int n_candidates = (prefast && prefast->enabled())
+    bool prefast_enabled = (prefast && prefast->enabled());
+    bool prefast_warmup_active =
+        prefast_enabled &&
+        cfg.prefast.warmup_steps > 0 &&
+        prefast_learning_steps < cfg.prefast.warmup_steps;
+    int n_candidates = (prefast_enabled && !prefast_warmup_active)
                      ? std::max(1, cfg.prefast.candidates_per_slot)
                      : 1;
     std::vector<CandidateTrial> candidates;
@@ -712,7 +723,7 @@ bool generate_candidate_for_slot(int slot,
         if (!generate_one_trial_from_current(current_ref, cfg, root, SUMP, cand)) {
             continue;
         }
-        if (prefast && prefast->enabled()) {
+        if (prefast_enabled) {
             cand.prefast_score = prefast->score(current_ref, cand.trial_ref);
         }
         candidates.push_back(cand);
@@ -725,7 +736,7 @@ bool generate_candidate_for_slot(int slot,
     }
 
     int best = 0;
-    if (prefast && prefast->enabled()) {
+    if (prefast_enabled && !prefast_warmup_active) {
         for (int i = 1; i < (int)candidates.size(); ++i) {
             if (candidates[i].prefast_score.dE_pred <
                 candidates[best].prefast_score.dE_pred) {
@@ -742,9 +753,11 @@ bool generate_candidate_for_slot(int slot,
 
     fs::path pos = fast_dir / ("POSCAR" + std::to_string(slot));
     fs::path sav = fast_dir / ("SAVE"   + std::to_string(slot));
+    fs::path base_sav = fast_dir / ("BASE_SAVE" + std::to_string(slot));
     fs::path met = fast_dir / ("META"   + std::to_string(slot));
 
     chosen.trial_init.outputvasp(pos.string().c_str());
+    current_ref.outputsave(base_sav.string().c_str());
     chosen.trial_ref.outputsave(sav.string().c_str());
     json meta;
     meta["source"] = "search_fast_screen";
@@ -756,11 +769,16 @@ bool generate_candidate_for_slot(int slot,
     meta["move_forward_choices"] = chosen.move.forward_choices;
     meta["move_reverse_choices"] = chosen.move.reverse_choices;
     meta["hastings_ratio"] = chosen.move.hastings_ratio;
-    if (prefast && prefast->enabled()) {
+    if (prefast_enabled) {
         meta["prefast_enabled"] = true;
         meta["prefast_basis"] = cfg.prefast.basis;
+        meta["prefast_requested_candidates_per_slot"] = cfg.prefast.candidates_per_slot;
         meta["prefast_candidates_per_slot"] = n_candidates;
         meta["prefast_candidates_generated"] = (int)candidates.size();
+        meta["prefast_warmup_steps"] = cfg.prefast.warmup_steps;
+        meta["prefast_learning_step_at_proposal"] = prefast_learning_steps;
+        meta["prefast_warmup_active"] = prefast_warmup_active;
+        meta["prefast_ranking_active"] = !prefast_warmup_active && n_candidates > 1;
         meta["prefast_selected_rank"] = 1;
         meta["prefast_selected_generated_index"] = chosen.generated_index;
         meta["prefast_dE_pred"] = chosen.prefast_score.dE_pred;
@@ -1044,14 +1062,18 @@ bool process_report_file(const fs::path& root,
         log.flush();
     }
 
-    // Normal MC proposal
-    ++mc_steps;
     double hastings_ratio = 1.0;
     std::string move_type = "<unknown>";
     bool meta_prefast_enabled = false;
     double prefast_dE_pred = 0.0;
     double prefast_base_energy = current_E;
     SparseDescriptor prefast_delta;
+    SparseDescriptor prefast_learning_delta;
+    std::string prefast_learning_delta_source = "none";
+    bool have_prefast_learning_delta = false;
+    bool computed_prefast_learning_delta = false;
+    bool have_base_ref = false;
+    bool final_same_as_base = false;
     try {
         std::ifstream meta_ifs(meta_path);
         if (meta_ifs) {
@@ -1069,17 +1091,61 @@ bool process_report_file(const fs::path& root,
     } catch (...) {
         hastings_ratio = 1.0;
     }
+
+    Structure prefast_base_ref;
+    fs::path prefast_base_save_path = out_dir / "BASE_SAVE";
+    if (fs::exists(prefast_base_save_path) &&
+        prefast_base_ref.readstruc(prefast_base_save_path.string().c_str())) {
+        have_base_ref = true;
+        final_same_as_base =
+            prefast_base_ref.atomtype == trial_ref.atomtype &&
+            prefast_base_ref.interstitial_postype == trial_ref.interstitial_postype;
+        if (prefast && prefast->enabled()) {
+            TrialScore learning_score = prefast->score(prefast_base_ref, trial_ref);
+            prefast_learning_delta = learning_score.delta;
+            prefast_learning_delta_source =
+                (allow_interstitial_reassign && n_reassigned > 0)
+                    ? "final_reassigned"
+                    : "final";
+            computed_prefast_learning_delta = true;
+            have_prefast_learning_delta = !prefast_learning_delta.values.empty();
+        }
+    } else if (!prefast_delta.values.empty()) {
+        prefast_learning_delta = prefast_delta;
+        prefast_learning_delta_source = "trial_meta";
+        have_prefast_learning_delta = true;
+    }
+
+    if (have_base_ref &&
+        (final_same_as_base ||
+         (computed_prefast_learning_delta && prefast_learning_delta.values.empty()))) {
+        log << "DISCARD_NO_CHANGE task_id=" << task_id
+            << " move=" << move_type
+            << " delta_source=" << prefast_learning_delta_source
+            << " reason="
+            << (final_same_as_base ? "final_same_as_base" : "empty_descriptor_delta")
+            << " n_reassigned=" << n_reassigned
+            << "\n";
+        log.flush();
+        cleanup_processed_task(root, task_id, rep_path, true);
+        return true;
+    }
+
+    // Normal MC proposal
+    ++mc_steps;
     bool accept = Accept(current_E, E_final, temp, rng, hastings_ratio);
-    if (prefast && prefast->enabled() && meta_prefast_enabled && !prefast_delta.values.empty()) {
+    if (prefast && prefast->enabled() && meta_prefast_enabled && have_prefast_learning_delta) {
         double dE_true_for_learning = E_final - prefast_base_energy;
-        auto update_stats = prefast->update(prefast_delta, dE_true_for_learning);
+        auto update_stats = prefast->update(prefast_learning_delta, dE_true_for_learning);
         if (prefast->log_summary()) {
             prefast->append_learning_log(root / "prefast_learning.log",
                                          mc_steps,
                                          task_id,
                                          prefast_dE_pred,
                                          update_stats,
-                                         accept);
+                                         accept,
+                                         prefast_learning_delta_source,
+                                         n_reassigned);
         }
         if (prefast->log_weight_updates()) {
             prefast->append_weight_update_log(root / "prefast_weight_updates.log",
@@ -1251,6 +1317,7 @@ int main(int argc, char** argv){
         << " continue=" << (cfg.continue_run ? "true" : "false")
         << " prefast=" << (cfg.prefast.enabled ? "on" : "off")
         << " prefast_candidates_per_slot=" << cfg.prefast.candidates_per_slot
+        << " prefast_warmup_steps=" << cfg.prefast.warmup_steps
         << " prefast_basis=" << cfg.prefast.basis
         << " prefast_nshells=" << cfg.prefast.nshells
         << " prefast_peak_scan_cutoff=" << cfg.prefast.peak_scan_cutoff
@@ -1358,7 +1425,7 @@ int main(int argc, char** argv){
 
                 fs::path gof = ROOT / "fast" / (".go_" + std::to_string(k));
                 if (fs::exists(gof)) continue;  // slot is busy
-                if (generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP, &prefast, current_E)) {
+                if (generate_candidate_for_slot(k, cfg, ROOT, struc, SUMP, &prefast, current_E, mc_steps)) {
                     processed_any = true;
                     cout << "generating candidate for worker #" << k << " successfully" << endl;
                 }
