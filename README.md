@@ -635,3 +635,11 @@ including:
 # Citation
 
 If you use PAIPAI in academic work, please cite the associated publications: Zhu, Siya, and Raymundo Arróyave. "Ground-state structure search of defective high-entropy alloys using machine-learning potentials and Monte Carlo sampling." Computational Materials Science 270 (2026): 114752. https://doi.org/10.1016/j.commatsci.2026.114752
+
+---
+
+# License
+
+PAIPAI is released under the MIT License. See [LICENSE](LICENSE).
+
+This repository includes third-party code with its own license notices, such as `include/json.hpp`.
