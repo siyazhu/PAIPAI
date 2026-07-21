@@ -4,6 +4,8 @@
 
 # Package for Alloy Interstitial Predictions using Artificial Intelligence (PAIPAI)
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21480012.svg)](https://doi.org/10.5281/zenodo.21480012)
+
 <p>
 PAIPAI is a versatile computational tool designed to efficiently search for crystalline metallic structures—especially those containing interstitials, point defects, grain boundaries, or surface slabs—with the lowest free energy.
 By combining Monte Carlo sampling techniques with machine-learning interatomic potentials (MLIPs), PAIPAI enables rapid and accurate exploration of vast configurational spaces that are traditionally inaccessible to first-principles methods alone.
@@ -633,6 +635,8 @@ including:
 ---
 
 # Citation
+
+Software DOI: [10.5281/zenodo.21480012](https://doi.org/10.5281/zenodo.21480012)
 
 If you use PAIPAI in academic work, please cite the associated publications: Zhu, Siya, and Raymundo Arróyave. "Ground-state structure search of defective high-entropy alloys using machine-learning potentials and Monte Carlo sampling." Computational Materials Science 270 (2026): 114752. https://doi.org/10.1016/j.commatsci.2026.114752
 
