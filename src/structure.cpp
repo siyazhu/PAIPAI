@@ -551,18 +551,18 @@ void Structure::outputvasp(const char* filename){
         for (i = 0; i < num_elements; i++){
                 outputfile << PERIODICTABLE[type[i]-1] <<" ";
         }
-	for (i = 0; i < num_interstitial_elements - 1; i++){
+	for (i = 0; i < num_interstitial_elements; i++){
                 outputfile << PERIODICTABLE[interstitial_type[i]-1] << " ";
         }
-        outputfile << PERIODICTABLE[interstitial_type[num_interstitial_elements-1]-1] << "\n";
+        outputfile << "\n";
 
         for (i = 0; i < num_elements; i++){
                 outputfile << num_atoms[i] <<" ";
         }
-	for (i = 0; i < num_interstitial_elements - 1; i++){
-		outputfile << num_interstitial_atoms[i] << " ";	
-	}
-        outputfile << num_interstitial_atoms[num_interstitial_elements-1] << "\n";
+	for (i = 0; i < num_interstitial_elements; i++){
+                outputfile << num_interstitial_atoms[i] << " ";
+        }
+        outputfile << "\n";
 
 	outputfile << "Cartesian\n";
 	//output metallic atoms
@@ -1450,15 +1450,15 @@ void Structure::outputsave(const char* filename){
         }
         outputfile << num_atoms[num_elements - 1] << "\n";
 
-        for (i = 0; i < num_interstitial_elements - 1; i++){
+        for (i = 0; i < num_interstitial_elements; i++){
                 outputfile << PERIODICTABLE[interstitial_type[i]-1] << " ";
         }
-        outputfile << PERIODICTABLE[interstitial_type[num_interstitial_elements-1]-1] << "\n";
+        outputfile << "\n";
 
-        for (i = 0; i < num_interstitial_elements - 1; i++){
+        for (i = 0; i < num_interstitial_elements; i++){
                 outputfile << num_interstitial_atoms[i] << " ";
         }
-        outputfile << num_interstitial_atoms[num_interstitial_elements-1] << "\n";
+        outputfile << "\n";
         
         outputfile << num_interstitial << "\n";
         outputfile << "No Shuffle\n";
