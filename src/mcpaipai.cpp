@@ -717,16 +717,12 @@ std::string submit_finiteT_trial_task(const fs::path& root,
     }
     Structure current_ref = struc;
 
-    MoveRecord move;
-    for (int attempt = 0; attempt < 100; ++attempt) {
-        struc = current_ref;
-        move = apply_random_mc_move(struc, cfg, root, SUMP);
-        if (move.type != "none") break;
-    }
-    if (move.type == "none") {
-        std::cerr << "[finiteT] no valid MC move was available for trial submission.\n";
-        return "";
-    }
+    // v2.2: make EXACTLY ONE proposal per finiteT step.  Retrying until a
+    // non-null move would renormalize the move-type probabilities in a
+    // composition-dependent way (e.g. metal swaps become impossible in a
+    // pure element), violating detailed balance for variable composition.
+    MoveRecord move = apply_random_mc_move(struc, cfg, root, SUMP);
+    if (move.type == "none") return "__PAIPAI_NOOP__";
     Structure trial_init = make_relaxed_seed_for_trial(root, current_ref, struc);
 
     fs::path pool = root / "waiting_pool";
@@ -1173,7 +1169,14 @@ int main(int argc, char** argv){
                 std::string tid = submit_finiteT_trial_task(
                     ROOT, cfg, struc, SUMP, mc_steps + 1
                 );
-                if (!tid.empty()) processed_any = true;
+                if (tid == "__PAIPAI_NOOP__") {
+                    ++mc_steps;  // rejected/null proposal is an MC self-transition
+                    log << "STEP " << mc_steps << " -> SELF_TRANSITION_NULL_MOVE\n";
+                    log.flush();
+                    processed_any = true;
+                } else if (!tid.empty()) {
+                    processed_any = true;
+                }
             }
         } else {
             // Search mode: keep fast-worker slots filled.
