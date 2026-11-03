@@ -14,6 +14,9 @@ class Structure{
 		vector<int> type;
 		vector<int> num_atoms;
 		vector<int> atomtype;
+		// Immutable origin-site labels (Ti/Al sublattices) for antisite statistics.
+		// Saved as a fifth metal-site coordinate column in v2.2 SAVE files.
+		vector<int> metal_site_sublattice;
 		vector<int> interstitial_type;
 		vector<int> interstitial_postype;
 		vector<int> num_interstitial_atoms;
