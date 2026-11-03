@@ -1,5 +1,6 @@
 #include "semigrand.h"
 #include <cassert>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -14,6 +15,7 @@ static Structure toy() {
     s.num_atoms = {2, 2, 0};
     s.num_metallic_atoms = 4;
     s.atomtype = {0, 0, 1, 1};
+    s.metal_site_sublattice = {0, 0, 1, 1};
     s.num_interstitial_elements = 1;
     s.interstitial_type = {6}; // C
     s.num_interstitial_atoms = {0};
@@ -102,6 +104,7 @@ int main() {
     assert(recovered.readstruc("v22_test_SAVE") == 1);
     assert(recovered.num_interstitial_elements == 0);
     assert(recovered.num_atoms == s.num_atoms);
+    assert(recovered.metal_site_sublattice == s.metal_site_sublattice);
     std::remove("v22_test_SAVE");
     std::remove("v22_test_POSCAR");
 
