@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(PAIPAI VERSION 2.0.0 LANGUAGES CXX)
+project(PAIPAI VERSION 2.2.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -77,3 +77,17 @@ install(PROGRAMS
     ${CMAKE_CURRENT_BINARY_DIR}/paipai
     DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# Lightweight C++ tests do not require the Python MLIP stack.
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(test_semigrand
+        tests/test_semigrand.cpp
+        src/structure.cpp
+        src/element.cpp
+        src/constants.cpp
+    )
+    target_include_directories(test_semigrand PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_semigrand PRIVATE stdc++fs)
+    add_test(NAME semi_grand_species_policy COMMAND test_semigrand)
+endif()
