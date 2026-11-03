@@ -218,7 +218,10 @@ def main():
             calc.fmax = args.fmax_screen
             calc.steps = args.max_steps_screen
             res = calc.relax(struct)
-            E_screen = float(res["energy"])
+            E_screen_raw = float(res["energy"])
+            # v2.2: rank changing-composition candidates by E - sum(mu_i N_i).
+            # mu_term comes from the discrete SAVE (not the relaxed coordinates).
+            E_screen = E_screen_raw - float(meta_in.get("mu_term", 0.0))
             struct_screen = res["final_structure"]
             elapsed = round(time.time() - t0, 3)
 
@@ -243,6 +246,7 @@ def main():
                     "task_id": task_id,
                     "source_slot": k,
                     "energy_screen": E_screen,
+                    "energy_screen_raw": E_screen_raw,
                     "fmax_screen": args.fmax_screen,
                     "max_steps_screen": args.max_steps_screen,
                     "elapsed_screen_s": elapsed,

@@ -207,7 +207,8 @@ Structure::Structure(){
 	num_elements = 0;
 	num_interstitial_elements = 0;
 	vector<vector<Real>>().swap(pos);      // metallic atom position, in Cartesian with scalingfactor = 1 (real position)
-        vector<int>().swap(atomtype);       // element type of each atom (as the order in the Species Names, from 0 to num_elements-1)
+        vector<int>().swap(atomtype);
+        vector<int>().swap(metal_site_sublattice);       // element type of each atom (as the order in the Species Names, from 0 to num_elements-1)
 	vector<int>().swap(num_atoms);		//number of atoms of each species
 	vector<int>().swap(type);		//the atomic number of each species
 	vector<vector<Real>>().swap(interstitial_pos); //interstitial positions, in Cartesian with scalingfactor = 1 (real position)
@@ -234,7 +235,8 @@ int Structure::readstruc(const char* filename){
 	Real scalingfactor;
 
 	vector<vector<Real>>().swap(pos);      // metallic atom position, in Cartesian with scalingfactor = 1 (real position)
-        vector<int>().swap(atomtype);       // element type of each atom/site (0 to num_elements-1)
+        vector<int>().swap(atomtype);
+        vector<int>().swap(metal_site_sublattice);       // element type of each atom/site (0 to num_elements-1)
         vector<int>().swap(num_atoms);      // number of atoms of each metallic species
         vector<int>().swap(type);           // atomic number of each metallic species
         vector<vector<Real>>().swap(interstitial_pos); // interstitial site positions
@@ -345,7 +347,8 @@ int Structure::readstruc(const char* filename){
 	vector<Real> atom_temp(3);
 	vector<Real> atom_pos_temp(3);
         vector<vector<Real>>().swap(pos);      // clear
-        vector<int>().swap(atomtype);          // clear
+        vector<int>().swap(atomtype);
+        vector<int>().swap(metal_site_sublattice);          // clear
 	string coordtype;
 	num_metallic_atoms = accumulate(num_atoms.begin(),num_atoms.end(),0);
 	cout <<"Number of metallic atoms: " << num_metallic_atoms <<endl;
@@ -419,6 +422,20 @@ int Structure::readstruc(const char* filename){
                 atomtype.push_back(kind);
                 metal_count_from_occ[kind]++;
             }
+            // Optional fifth column: immutable origin-sublattice type.
+            // For legacy structures, initialize from the initial occupation.
+            int sublattice = atomtype.back();
+            Real xx, yy, zz;
+            int ignored_occ, explicit_sub;
+            std::istringstream extra(line);
+            if (extra >> xx >> yy >> zz >> ignored_occ >> explicit_sub) {
+                if (explicit_sub < 0 || explicit_sub >= num_elements) {
+                    cerr << "Invalid original sublattice ID: " << explicit_sub << endl;
+                    return 0;
+                }
+                sublattice = explicit_sub;
+            }
+            metal_site_sublattice.push_back(sublattice);
         }
 
         if (metal_has_occ){
@@ -551,18 +568,18 @@ void Structure::outputvasp(const char* filename){
         for (i = 0; i < num_elements; i++){
                 outputfile << PERIODICTABLE[type[i]-1] <<" ";
         }
-	for (i = 0; i < num_interstitial_elements - 1; i++){
+	for (i = 0; i < num_interstitial_elements; i++){
                 outputfile << PERIODICTABLE[interstitial_type[i]-1] << " ";
         }
-        outputfile << PERIODICTABLE[interstitial_type[num_interstitial_elements-1]-1] << "\n";
+        outputfile << "\n";
 
         for (i = 0; i < num_elements; i++){
                 outputfile << num_atoms[i] <<" ";
         }
-	for (i = 0; i < num_interstitial_elements - 1; i++){
-		outputfile << num_interstitial_atoms[i] << " ";	
-	}
-        outputfile << num_interstitial_atoms[num_interstitial_elements-1] << "\n";
+	for (i = 0; i < num_interstitial_elements; i++){
+                outputfile << num_interstitial_atoms[i] << " ";
+        }
+        outputfile << "\n";
 
 	outputfile << "Cartesian\n";
 	//output metallic atoms
@@ -1450,15 +1467,15 @@ void Structure::outputsave(const char* filename){
         }
         outputfile << num_atoms[num_elements - 1] << "\n";
 
-        for (i = 0; i < num_interstitial_elements - 1; i++){
+        for (i = 0; i < num_interstitial_elements; i++){
                 outputfile << PERIODICTABLE[interstitial_type[i]-1] << " ";
         }
-        outputfile << PERIODICTABLE[interstitial_type[num_interstitial_elements-1]-1] << "\n";
+        outputfile << "\n";
 
-        for (i = 0; i < num_interstitial_elements - 1; i++){
+        for (i = 0; i < num_interstitial_elements; i++){
                 outputfile << num_interstitial_atoms[i] << " ";
         }
-        outputfile << num_interstitial_atoms[num_interstitial_elements-1] << "\n";
+        outputfile << "\n";
         
         outputfile << num_interstitial << "\n";
         outputfile << "No Shuffle\n";
@@ -1466,11 +1483,13 @@ void Structure::outputsave(const char* filename){
 
         // New PAIPAI SAVE format:
         // line order is the fixed site order; the 4th column is the occupation id.
-        // metal site i:        x y z atomtype[i]
-        // interstitial site s: x y z interstitial_postype[s]  (-1 means empty)
+        // metal site i: x y z occupation_id original_sublattice_id
+        // interstitial site s: x y z interstitial_postype[s] (-1 means empty)
         for (i = 0; i < num_metallic_atoms; i++){
+                const int origin = (i < (int)metal_site_sublattice.size())
+                                   ? metal_site_sublattice[i] : atomtype[i];
                 outputfile << pos[i][0] << " " << pos[i][1] << " " << pos[i][2]
-                           << " " << atomtype[i] << "\n";
+                           << " " << atomtype[i] << " " << origin << "\n";
         }
 
         for (i = 0; i < num_interstitial; i++){

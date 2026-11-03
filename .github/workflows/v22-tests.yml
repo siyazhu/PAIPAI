@@ -1,0 +1,19 @@
+name: PAIPAI v2.2 C++ checks
+
+on:
+  push:
+    branches: [v2.2]
+  pull_request:
+    branches: [v2.0-dev, main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

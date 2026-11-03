@@ -15,6 +15,7 @@
 #include <ctime>
 
 #include "structure.h"   // your Structure class
+#include "semigrand.h"
 #include "json.hpp"      // nlohmann::json single-header
 
 namespace fs = std::filesystem;
@@ -35,6 +36,9 @@ struct Args {
     double intsite_neighbor_cutoff = 3.5;  // cutoff for interstitial-site metal-neighbor map (Angstrom)
     double intsite_hop_cutoff = 3.0;       // cutoff for interstitial-site local hop graph (Angstrom)
     std::string mode = "search";          // "search" = fast+slow pool; "finiteT" = one direct slow task at a time
+    std::vector<std::string> species_rules;  // e.g. Ti=fixed, Si=mu:-4.5 (eV)
+    SpeciesPolicy policy;
+    bool dry_run = false;
     double interstitial_site_cutoff = 1.5; // max relaxed interstitial distance to assigned site (Angstrom)
     std::string resume_state_dir;          // existing SAVE/CONTCAR/energy seed
     bool continue_run = false;             // continue from ./mcprocess latest accepted state
@@ -49,6 +53,7 @@ void print_help(const char* prog){
               << "[--intsite-neighbor-cutoff R] [--intsite-hop-cutoff R] "
               << "[--mode search|finiteT] [--finiteT] "
               << "[--interstitial-site-cutoff R] "
+              << "[--species ELEMENT=fixed|mu:VALUE] [--dry-run] "
               << "[--resume-state DIR] [--continue]\n";
 }
 
@@ -74,6 +79,8 @@ Args parse_args(int argc, char** argv){
         else if (s=="--intsite-neighbor-cutoff"){ need("--intsite-neighbor-cutoff"); a.intsite_neighbor_cutoff=std::stod(argv[++i]); }
         else if (s=="--intsite-hop-cutoff"){ need("--intsite-hop-cutoff"); a.intsite_hop_cutoff=std::stod(argv[++i]); }
         else if (s=="--mode"){ need("--mode"); a.mode=argv[++i]; }
+        else if (s=="--species"){ need("--species"); a.species_rules.push_back(argv[++i]); }
+        else if (s=="--dry-run"){ a.dry_run=true; }
         else if (s=="--finiteT"){ a.mode="finiteT"; }
         else if (s=="--interstitial-site-cutoff"){ need("--interstitial-site-cutoff"); a.interstitial_site_cutoff=std::stod(argv[++i]); }
         else if (s=="--resume-state"){ need("--resume-state"); a.resume_state_dir=argv[++i]; }
@@ -89,6 +96,10 @@ Args parse_args(int argc, char** argv){
     if (a.mode != "search" && a.mode != "finiteT") {
         std::cerr << "Unknown --mode: " << a.mode
                   << " (valid: search, finiteT)\n";
+        std::exit(2);
+    }
+    if (!(a.temp > 0.0) || !std::isfinite(a.temp)) {
+        std::cerr << "--temp must be finite and positive.\n";
         std::exit(2);
     }
     if (a.interstitial_site_cutoff <= 0.0) {
@@ -570,11 +581,13 @@ MoveRecord apply_random_mc_move(Structure& struc,
         struc.clusterSwapInterstitial(a,b);
         rec = {"cluster_swap_interstitial", a, b};
     } else if ((r -= P4) < P5) {
-        // TODO: exchangeMetal
-        // struc.exchangeMetal(...);
+        int site = -1, to = -1;
+        if (cfg.policy.exchange_metal(struc, site, to))
+            rec = {"exchange_metal", site, to};
     } else {
-        // TODO: exchangeInterstitial
-        // struc.exchangeInterstitial(...);
+        int site = -1, to = -1;
+        if (cfg.policy.exchange_interstitial(struc, site, to))
+            rec = {"exchange_interstitial", site, to};
     }
     return rec;
 }
@@ -616,6 +629,7 @@ bool generate_candidate_for_slot(int slot,
     struc.outputsave(sav.string().c_str());
     json meta;
     meta["source"] = "search_fast_screen";
+    meta["mu_term"] = cfg.policy.chemical_term(struc);
     meta["mode"] = "search";
     meta["source_slot"] = slot;
     meta["move_type"] = move.type;
@@ -703,16 +717,12 @@ std::string submit_finiteT_trial_task(const fs::path& root,
     }
     Structure current_ref = struc;
 
-    MoveRecord move;
-    for (int attempt = 0; attempt < 100; ++attempt) {
-        struc = current_ref;
-        move = apply_random_mc_move(struc, cfg, root, SUMP);
-        if (move.type != "none") break;
-    }
-    if (move.type == "none") {
-        std::cerr << "[finiteT] no valid MC move was available for trial submission.\n";
-        return "";
-    }
+    // v2.2: make EXACTLY ONE proposal per finiteT step.  Retrying until a
+    // non-null move would renormalize the move-type probabilities in a
+    // composition-dependent way (e.g. metal swaps become impossible in a
+    // pure element), violating detailed balance for variable composition.
+    MoveRecord move = apply_random_mc_move(struc, cfg, root, SUMP);
+    if (move.type == "none") return "__PAIPAI_NOOP__";
     Structure trial_init = make_relaxed_seed_for_trial(root, current_ref, struc);
 
     fs::path pool = root / "waiting_pool";
@@ -733,6 +743,7 @@ std::string submit_finiteT_trial_task(const fs::path& root,
     json meta;
     meta["task_id"] = task_id;
     meta["source"] = "finiteT_direct";
+    meta["mu_term"] = cfg.policy.chemical_term(struc);
     meta["mode"] = "finiteT";
     meta["mc_step_proposal"] = next_step;
     meta["move_type"] = move.type;
@@ -770,9 +781,7 @@ bool process_report_file(const fs::path& root,
                          bool& have_state,
                          int& mc_steps,
                          int& accept_count,
-                         const std::string& mode,
-                         double interstitial_site_cutoff,
-                         double temp,
+                         const Args& cfg,
                          std::mt19937_64& rng,
                          std::ofstream& log,
                          bool* accepted_state_changed = nullptr)
@@ -830,7 +839,7 @@ bool process_report_file(const fs::path& root,
                 contcar_path.string().c_str(),
                 neigh_path.string().c_str(),
                 1,
-                interstitial_site_cutoff,
+                cfg.interstitial_site_cutoff,
                 contcar_path.string().c_str(),
                 n_reassigned)) {
             std::cerr << "[WARN] failed to reconcile initial interstitial sites for "
@@ -864,7 +873,7 @@ bool process_report_file(const fs::path& root,
         return true;
     }
 
-    bool allow_interstitial_reassign = (mode == "search");
+    bool allow_interstitial_reassign = (cfg.mode == "search");
     Structure trial_ref;
     int n_reassigned = 0;
     bool reconcile_ok =
@@ -873,7 +882,7 @@ bool process_report_file(const fs::path& root,
             contcar_path.string().c_str(),
             neigh_path.string().c_str(),
             allow_interstitial_reassign ? 1 : 0,
-            interstitial_site_cutoff,
+            cfg.interstitial_site_cutoff,
             allow_interstitial_reassign ? contcar_path.string().c_str() : "",
             n_reassigned);
 
@@ -911,12 +920,23 @@ bool process_report_file(const fs::path& root,
     } catch (...) {
         hastings_ratio = 1.0;
     }
-    bool accept = Accept(current_E, E_final, temp, rng, hastings_ratio);
+    // Physical energies are retained. The MC objective is E - sum(mu_i N_i).
+    Structure current_ref;
+    if (!current_ref.readstruc((root / "SAVE").string().c_str())) {
+        std::cerr << "[ERROR] cannot read accepted SAVE during MC decision.\n";
+        return false;
+    }
+    const double old_omega = current_E - cfg.policy.chemical_term(current_ref);
+    const double new_omega = E_final - cfg.policy.chemical_term(trial_ref);
+    bool accept = Accept(old_omega, new_omega, cfg.temp, rng, hastings_ratio);
     log << "STEP " << mc_steps
         << " proposal task_id=" << task_id
         << " move=" << move_type
         << " E_new=" << std::setprecision(12) << E_final
         << " E_old=" << current_E
+        << " Omega_new=" << new_omega
+        << " Omega_old=" << old_omega
+        << " N_new=" << cfg.policy.counts(trial_ref)
         << " hastings_ratio=" << hastings_ratio
         << " -> "   << (accept ? "ACCEPT" : "REJECT")
         << "\n";
@@ -943,9 +963,7 @@ void wait_for_initial_state(const fs::path& root,
                             bool& have_state,
                             int& mc_steps,
                             int& accept_count,
-                            const std::string& mode,
-                            double interstitial_site_cutoff,
-                            double temp,
+                            const Args& cfg,
                             std::mt19937_64& rng,
                             std::ofstream& log)
 {
@@ -963,8 +981,7 @@ void wait_for_initial_state(const fs::path& root,
                 root, rep_path,
                 current_E, have_state,
                 mc_steps, accept_count,
-                mode, interstitial_site_cutoff,
-                temp, rng, log
+                cfg, rng, log
             );
             if (ok) processed_any = true;
             if (have_state) break;
@@ -1028,6 +1045,18 @@ int main(int argc, char** argv){
                   << seed_struc << "\n";
         return 1;
     }
+    try {
+        cfg.policy.configure(struc, cfg.species_rules);
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] " << e.what() << "\n";
+        return 2;
+    }
+    if (cfg.dry_run) {
+        std::cout << "PAIPAI v2.2 species policies accepted; composition: "
+                  << cfg.policy.counts(struc) << "\n";
+        for (const auto& rule : cfg.species_rules) std::cout << "  " << rule << "\n";
+        return 0;
+    }
     struc.buildIntsiteMetalNeighborMap(cfg.intsite_neighbor_cutoff);
     struc.outputIntsiteMetalNeighborMap("intsite_metal_neighbors.dat");
     struc.buildIntsiteHopNeighborMap(cfg.intsite_hop_cutoff);
@@ -1052,6 +1081,7 @@ int main(int argc, char** argv){
         << " p_cluster_inter=" << cfg.p_cluster_inter
         << " p_exch_metal=" << cfg.p_exch_metal
         << " p_exch_inter=" << cfg.p_exch_inter
+        << " open_species=" << (cfg.policy.has_open_species() ? "true" : "false")
         << " intsite_neighbor_cutoff=" << cfg.intsite_neighbor_cutoff
         << " intsite_hop_cutoff=" << cfg.intsite_hop_cutoff
         << " interstitial_site_cutoff=" << cfg.interstitial_site_cutoff
@@ -1101,8 +1131,7 @@ int main(int argc, char** argv){
             return 1;
         }
         wait_for_initial_state(ROOT, current_E, have_state, mc_steps,
-                               accept_count, cfg.mode, cfg.interstitial_site_cutoff,
-                               cfg.temp, rng, log);
+                               accept_count, cfg, rng, log);
     }
 
     // Main loop.
@@ -1124,8 +1153,7 @@ int main(int argc, char** argv){
                 ROOT, rep_path,
                 current_E, have_state,
                 mc_steps, accept_count,
-                cfg.mode, cfg.interstitial_site_cutoff,
-                cfg.temp, rng, log,
+                cfg, rng, log,
                 &accepted_state_changed
             );
             if (ok) processed_any = true;
@@ -1141,7 +1169,14 @@ int main(int argc, char** argv){
                 std::string tid = submit_finiteT_trial_task(
                     ROOT, cfg, struc, SUMP, mc_steps + 1
                 );
-                if (!tid.empty()) processed_any = true;
+                if (tid == "__PAIPAI_NOOP__") {
+                    ++mc_steps;  // rejected/null proposal is an MC self-transition
+                    log << "STEP " << mc_steps << " -> SELF_TRANSITION_NULL_MOVE\n";
+                    log.flush();
+                    processed_any = true;
+                } else if (!tid.empty()) {
+                    processed_any = true;
+                }
             }
         } else {
             // Search mode: keep fast-worker slots filled.
