@@ -135,6 +135,25 @@ struct SpeciesPolicy {
         for (int i = 0; i < s.num_interstitial_elements; ++i)
             out << "," << species_name(s.interstitial_type[i]) << "(inter)="
                 << s.num_interstitial_atoms[i];
+        if ((int)s.metal_site_sublattice.size() == s.num_metallic_atoms) {
+            // Site fractions distinguish Ti_on_Al antisites from Al_on_Ti,
+            // and Si occupying each originally ordered sublattice.
+            for (int sub = 0; sub < s.num_elements; ++sub) {
+                std::vector<int> occupancies(s.num_elements, 0);
+                int total = 0;
+                for (int i = 0; i < s.num_metallic_atoms; ++i) {
+                    if (s.metal_site_sublattice[i] != sub) continue;
+                    ++occupancies[s.atomtype[i]];
+                    ++total;
+                }
+                if (!total) continue;
+                out << " " << species_name(s.type[sub]) << "_site{";
+                for (int k = 0; k < s.num_elements; ++k)
+                    out << (k ? "," : "") << species_name(s.type[k]) << ":"
+                        << occupancies[k];
+                out << "}";
+            }
+        }
         return out.str();
     }
 
